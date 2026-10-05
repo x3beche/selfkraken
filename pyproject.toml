@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "selfkraken"
+version = "0.1.0"
+description = "Private, repository-local Git assistant: index a repo, ask one model for a diff, apply, test, and record every change."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "typer>=0.12",
+  "python-dotenv>=1.0",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "build>=1.2"]
+
+[project.scripts]
+skraken = "selfkraken.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["selfkraken"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
