@@ -31,6 +31,8 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
     QPen,
+    QStandardItem,
+    QStandardItemModel,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -59,6 +61,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
+    QTabBar,
     QTableView,
     QTabWidget,
     QToolBar,
@@ -75,8 +78,10 @@ from selfkraken.errors import SKError
 from selfkraken.graph import GraphRow, layout, list_branches, read_commits
 from selfkraken.workflow import ApplyOutcome, DEGRADED_MODE_HINT
 
+from selfkraken.gui import monaco_payload as monaco_api
 from selfkraken.gui.diff_view import DiffHighlighter, monospace_font
 from selfkraken.gui.graph_widget import GraphView, read_commit_detail
+from selfkraken.gui.monaco_view import MonacoView
 from selfkraken.gui.models import (
     BranchListModel,
     FileTreeModel,
@@ -144,8 +149,7 @@ COMMIT_MESSAGE_LINES = 3
 REQUEST_LINES = 4
 PASTED_DIFF_LINES = 6
 TEST_OUTPUT_LINES = 7
-DIFF_MIN_LINES = 6
-#: the document margin inside a plain-text box: the stylesheet padding already
+DIFF_MIN_LINES = 6#: the document margin inside a plain-text box: the stylesheet padding already
 #: spaces the text, so the document itself adds nothing
 TEXT_BOX_MARGIN = 0
 #: a pixel of rounding slack, so a box that fits exactly never grows a scrollbar
@@ -166,6 +170,28 @@ LOG_DOCK_MAX_ROWS = 6
 LOG_DOCK_MIN_HEIGHT = 76
 #: smallest window the layout is designed for (the 1024x700 check)
 MIN_WINDOW_WIDTH = 1024
+
+# --------------------------------------------------------------------------- #
+# the code tabs: proposal diff + opened files, both Monaco
+# --------------------------------------------------------------------------- #
+#: permanent centre tabs, by index: Graph, Proposals, Changes; files come after
+TAB_GRAPH = 0
+TAB_PROPOSALS = 1
+TAB_CHANGES = 2
+PERMANENT_TABS = 3
+
+#: a diff is shown side by side only when the pane is at least this wide; below
+#: it the two columns would each be narrower than a line of code
+SIDE_BY_SIDE_MIN_WIDTH = 700
+#: the touched-file strip is one row per file, and never taller than this
+FILE_LIST_MAX_ROWS = 5
+FILE_ROW_HEIGHT = ROW_HEIGHT
+#: the strip's own height: one line of text, the buttons, nothing more
+DIFF_STRIP_HEIGHT = BUTTON_HEIGHT + 2 * SPACE_4
+#: a file body larger than this is not handed to the editor
+FILE_TOO_LARGE_NOTE = "file too large to preview"
+#: how many opened files may sit in the centre at once (each is a renderer)
+MAX_OPEN_FILES = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -470,6 +496,53 @@ class ProposalStatusDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class DiffFileDelegate(QStyledItemDelegate):
+    """One touched file per row: path (elided) on the left, ``+N −M`` right.
+
+    The counts carry the palette's added/removed colours *and* their signs, so
+    the strip reads without colour, and the path is never cut mid-word: the full
+    value lives in the tooltip like every other cell in this window.
+    """
+
+    def __init__(self, palette: Palette, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+
+    def paint(self, painter, option, index) -> None:  # noqa: D102
+        path = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        added, removed = index.data(Qt.ItemDataRole.UserRole) or (0, 0)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        background = self._palette.selection_bg if selected else self._palette.base
+        painter.save()
+        painter.fillRect(option.rect, QColor(background))
+        text_colour = self._palette.selection_text if selected else self._palette.text
+        metrics = QFontMetrics(option.font)
+        counts = f"+{added}  \u2212{removed}"
+        counts_width = metrics.horizontalAdvance(counts) + CELL_PADDING
+        available = option.rect.width() - 2 * CELL_PADDING - counts_width
+        label = metrics.elidedText(path, Qt.TextElideMode.ElideMiddle, max(available, 0))
+        painter.setPen(QPen(QColor(text_colour)))
+        painter.drawText(
+            option.rect.adjusted(CELL_PADDING, 0, -counts_width - CELL_PADDING, 0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            label,
+        )
+        # the signs are drawn in the diff colours, right-aligned on the same line
+        right = option.rect.adjusted(option.rect.width() - counts_width - CELL_PADDING,
+                                     0, -CELL_PADDING, 0)
+        painter.setPen(QPen(QColor(self._palette.ok)))
+        painter.drawText(right, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         f"+{added}")
+        minus_x = right.left() + metrics.horizontalAdvance(f"+{added}  ")
+        painter.setPen(QPen(QColor(self._palette.err)))
+        painter.drawText(
+            QRect(minus_x, right.top(), counts_width, right.height()),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            f"\u2212{removed}",
+        )
+        painter.restore()
+
+
 def guidance_page(
     message: str, palette: Palette, on_add: Callable[[], None], on_sample: Callable[[], None]
 ) -> QWidget:
@@ -540,6 +613,17 @@ def box_height_for(widget: QWidget, lines: int) -> int:
     )
 
 
+def mono_box_height(lines: int) -> int:
+    """Height of a code box showing *lines* monospace lines.
+
+    A Monaco view sizes itself by the *web* font, so its Qt-side font metrics
+    would be the UI font; this measures the monospace face the viewer is
+    configured with instead, which is the height the pane actually needs.
+    """
+    height = QFontMetrics(monospace_font(MONO_PT)).height()
+    return 2 * BORDER_WIDTH + 2 * CONTROL_PADDING_V + max(lines, 1) * height + TEXT_BOX_SLACK
+
+
 def compact_item_view(view: QAbstractItemView, select_rows: bool = True) -> None:
     """One row rhythm for every table, tree and list in the window.
 
@@ -607,6 +691,11 @@ class MainWindow(QMainWindow):
         self._log_dock_height: Optional[int] = None
         self._files: list[str] = []
         self._request_valid = False
+        #: path -> (view, body text) for every file tab open in the centre
+        self._open_files: dict[str, tuple[MonacoView, str]] = {}
+        #: guards the async diff/file reads: only the newest request may paint
+        self._diff_request = 0
+        self._file_request = 0
 
         self.setWindowTitle("selfkraken — repository-local Git assistant")
 
@@ -677,6 +766,11 @@ class MainWindow(QMainWindow):
         self.act_tab_proposals.setShortcut(QKeySequence("Ctrl+2"))
         self.act_tab_proposals.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
 
+        self.act_tab_changes = QAction("Show &Changes tab", self)
+        self.act_tab_changes.setShortcut(QKeySequence("Ctrl+3"))
+        self.act_tab_changes.setToolTip("The diff of the selected proposal (Ctrl+3)")
+        self.act_tab_changes.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
+
         self.act_quit = QAction("&Quit", self)
         self.act_quit.setShortcut(QKeySequence.StandardKey.Quit)
         self.act_quit.triggered.connect(self.close)
@@ -687,7 +781,8 @@ class MainWindow(QMainWindow):
 
         for action in (
             self.act_refresh, self.act_new_proposal, self.act_tab_graph,
-            self.act_tab_proposals, self.act_quit, self.act_help,
+            self.act_tab_proposals, self.act_tab_changes, self.act_quit,
+            self.act_help,
         ):
             self.addAction(action)
 
@@ -863,7 +958,103 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.graph_stack, "&Graph")
         self.tabs.addTab(self.proposals_stack, "&Proposals")
+
+        # -- Changes tab: the proposal diff, in Monaco -----------------------
+        self.changes_page = self._build_changes_page()
+        self.tabs.addTab(self.changes_page, "&Changes")
+        self.tabs.setTabsClosable(True)  # file tabs get a close button
+        self.tabs.tabCloseRequested.connect(self._close_code_tab)
+        for index in range(PERMANENT_TABS):
+            self.tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
         self.setCentralWidget(self.tabs)
+
+    # ------------------------------------------------------------ changes tab
+    def _build_changes_page(self) -> QWidget:
+        """File strip on top, the editor below: no chrome in between.
+
+        One row per touched file with its ``+N/−M`` counts; picking a row shows
+        that file's diff.  With a single file the list would be a one-row band of
+        nothing, so the path lives in the strip's label instead.
+        """
+        page = QWidget()
+        page.setObjectName("changesPage")
+        page.setAccessibleName("Proposal diff")
+        box = QVBoxLayout(page)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+
+        strip = QFrame(page)
+        strip.setObjectName("diffStrip")
+        strip.setFixedHeight(control_height(DIFF_STRIP_HEIGHT, META_PT))
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_NESTED, 0)
+        row.setSpacing(SPACE_6)
+        self.diff_title = ElidedLabel("No proposal selected.", self.palette, muted=True)
+        self.diff_title.setAccessibleName("Diff file name")
+        self.diff_hint = ElidedLabel("", self.palette, muted=True)
+        self.diff_hint.setAccessibleName("Diff note")
+        self.side_by_side_button = QToolButton()
+        self.side_by_side_button.setText("Side by side")
+        self.side_by_side_button.setCheckable(True)
+        self.side_by_side_button.setChecked(False)
+        self.side_by_side_button.setAutoRaise(True)
+        self.side_by_side_button.setAccessibleName("Toggle side-by-side diff")
+        self.side_by_side_button.setToolTip(
+            "Show the two versions next to each other (inline when the pane is narrow)"
+        )
+        self.side_by_side_button.toggled.connect(self._on_side_by_side_toggled)
+        row.addWidget(self.diff_title, 3)
+        row.addWidget(self.diff_hint, 2)
+        row.addWidget(self.side_by_side_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        box.addWidget(strip)
+
+        self.diff_files = QListView()
+        self.diff_files.setObjectName("diffFileList")
+        self.diff_files.setVisible(False)
+        self.diff_files.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.diff_files.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.diff_files.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.diff_files.setItemDelegate(DiffFileDelegate(self.palette, self.diff_files))
+        self.diff_files.setUniformItemSizes(True)
+        self.diff_files.setAccessibleName("Files touched by the proposal")
+        self.diff_files.setToolTip("Click a file to show its diff.")
+        self.diff_file_model = QStandardItemModel(self.diff_files)
+        self.diff_files.setModel(self.diff_file_model)
+        self.diff_files.selectionModel().currentChanged.connect(
+            self._on_diff_file_selected
+        )
+        box.addWidget(self.diff_files, 0)
+
+        self.diff_view = MonacoView(self.palette, name="proposal diff")
+        self.diff_view.setMinimumHeight(box_height_for(self.diff_view, DIFF_MIN_LINES))
+        box.addWidget(self.diff_view, 1)
+
+        self._diff_patches: list[monaco_api.FilePatch] = []
+        self._diff_pairs: list[Optional[tuple[str, str]]] = []
+        self._diff_side_by_side: Optional[bool] = None
+        self._diff_auto_side = True
+        self._show_diff_nothing("No proposal selected.")
+        return page
+
+    def _show_diff_nothing(self, message: str) -> None:
+        self.diff_title.setText(message)
+        self.diff_hint.setText("")
+        self.diff_files.setVisible(False)
+        self.diff_view.clear()
+
+    def _apply_diff_layout(self) -> None:
+        """Decide inline vs side-by-side from the pane, unless the user chose."""
+        if self._diff_auto_side:
+            wanted = self.changes_page.width() >= SIDE_BY_SIDE_MIN_WIDTH
+            if wanted != self.side_by_side_button.isChecked():
+                self._diff_side_by_side = wanted
+                self.side_by_side_button.setChecked(wanted)
+                self._repaint_diff()
+        elif self._diff_side_by_side != self.side_by_side_button.isChecked():
+            self._diff_side_by_side = self.side_by_side_button.isChecked()
+            self._repaint_diff()
 
     # -------------------------------------------------------------- left dock
     def _build_left_dock(self) -> None:
@@ -881,8 +1072,10 @@ class MainWindow(QMainWindow):
         self.files_view.setAccessibleName("File tree")
         self.files_view.setToolTip(
             "Repository files. Files touched by the selected proposal are shown "
-            "bold with '✎ changed'."
+            "bold with '✎ changed'. Double-click (or Enter) opens one read-only "
+            "in a tab beside Graph and Proposals."
         )
+        self.files_view.activated.connect(self._on_file_activated)
         self.files_empty = notice_page(
             "No files to show — pick a repository and press Index.", self.palette
         )
@@ -1081,16 +1274,12 @@ class MainWindow(QMainWindow):
         self.rationale_edit.setAccessibleName("Proposal rationale")
         rationale_caption.setBuddy(self.rationale_edit)
 
-        diff_caption = field_label("Diff")
-        self.diff_view = QPlainTextEdit()
-        self.diff_view.setReadOnly(True)
-        self.diff_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.diff_view.setFont(monospace_font(MONO_PT))
-        self.diff_view.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.diff_view.setMinimumHeight(box_height_for(self.diff_view, DIFF_MIN_LINES))
-        self.diff_view.setAccessibleName("Proposal diff viewer")
-        diff_caption.setBuddy(self.diff_view)
-        self.diff_highlighter = DiffHighlighter(self.diff_view.document(), self.palette)
+        # the diff itself is a centre tab (Monaco); the review pane says where it
+        # is instead of showing a second, worse copy of it
+        diff_pointer = ElidedLabel(
+            "Diff: the Changes tab (Ctrl+3)", self.palette, muted=True
+        )
+        diff_pointer.setAccessibleName("Where the diff is shown")
 
         option_row = QHBoxLayout()
         option_row.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
@@ -1144,8 +1333,7 @@ class MainWindow(QMainWindow):
 
         detail_layout.addWidget(rationale_caption)
         detail_layout.addWidget(self.rationale_edit)
-        detail_layout.addWidget(diff_caption)
-        detail_layout.addWidget(self.diff_view, 1)
+        detail_layout.addWidget(diff_pointer)
         detail_layout.addLayout(option_row)
         detail_layout.addLayout(button_row)
         column.addWidget(self.detail_group, 1)
@@ -1156,11 +1344,8 @@ class MainWindow(QMainWindow):
         )
         self.tests_toggle.setAccessible("Toggle test output section")
         self.tests_toggle.setEnabled(False)
-        self.tests_output = QPlainTextEdit()
-        self.tests_output.setReadOnly(True)
-        self.tests_output.setFont(monospace_font(MONO_PT))
-        self.tests_output.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.tests_output.setFixedHeight(box_height_for(self.tests_output, TEST_OUTPUT_LINES))
+        self.tests_output = MonacoView(self.palette, name="test output")
+        self.tests_output.setFixedHeight(mono_box_height(TEST_OUTPUT_LINES))
         self.tests_output.setVisible(False)
         self.tests_output.setAccessibleName("Test output tail")
         self.tests_toggle.toggled.connect(self.tests_output.setVisible)
@@ -1301,15 +1486,25 @@ class MainWindow(QMainWindow):
         views_menu = self.menuBar().addMenu("&Views")
         views_menu.addAction(self.act_tab_graph)
         views_menu.addAction(self.act_tab_proposals)
+        views_menu.addAction(self.act_tab_changes)
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.act_help)
 
     def _set_tab_order(self) -> None:
+        """One focus walk: toolbar → repository views → review → log.
+
+        ``setTabOrder`` refuses (and warns on stderr) for two widgets that do not
+        share a window, so every pair is checked first: docked widgets only belong
+        to this window once the dock is installed, and a toolbar button lives in
+        the toolbar's own layout.
+        """
         chain = [
             self.repo_combo,
             self.act_add_repo, self.act_index, self.act_tests,
             self.act_export, self.act_import, self.sample_button,
-            self.left_tabs, self.graph_view, self.proposals_table,
+            self.left_tabs, self.files_view, self.branches_view,
+            self.graph_view, self.proposals_table, self.diff_files,
+            self.diff_view, self.side_by_side_button,
             self.new_proposal_toggle, self.request_edit, self.paths_edit,
             self.diff_input, self.submit_button,
             self.apply_button, self.reject_button, self.revert_button,
@@ -1318,9 +1513,9 @@ class MainWindow(QMainWindow):
         previous: Optional[QWidget] = None
         for item in chain:
             widget = self.toolbar.widgetForAction(item) if isinstance(item, QAction) else item
-            if not isinstance(widget, QWidget):
+            if not isinstance(widget, QWidget) or not widget.isEnabled():
                 continue
-            if previous is not None:
+            if previous is not None and previous.window() is widget.window():
                 QWidget.setTabOrder(previous, widget)
             previous = widget
 
@@ -1584,6 +1779,7 @@ class MainWindow(QMainWindow):
         self._current_repo_id = self._combo_repo_id()
         self._selected_proposal_id = None
         self.commit_group.setVisible(False)
+        self.close_code_tabs_for_repo_switch()  # a tab of another repo is noise
         self.refresh_proposals()
         self.refresh_log()
         self.load_graph()
@@ -1799,8 +1995,9 @@ class MainWindow(QMainWindow):
             self._selected_proposal_id = None
             self.detail_meta.setText("No proposal selected.")
             self.rationale_edit.setPlainText("")
-            self.diff_view.setPlainText("")
-            self.tests_output.setPlainText("")
+            self._diff_patches, self._diff_pairs = [], []
+            self._show_diff_nothing("No proposal selected.")
+            self.tests_output.clear()
             self.tests_output.setVisible(False)
             self.tests_toggle.setExpanded(False)
             self.tests_toggle.set_note("")
@@ -1817,18 +2014,19 @@ class MainWindow(QMainWindow):
             f"{proposal.model} · created {local_time(proposal.created_at)}{sample_note}"
         )
         self.rationale_edit.setPlainText(proposal.rationale or "(no rationale)")
-        self.diff_view.setPlainText(proposal.diff.rstrip("\n"))
+        self._load_proposal_diff(proposal)
         self.file_model.set_changed(diffs.touched_paths(proposal.diff))
         self._load_test_tail(proposal.id)
+        self._refresh_file_highlights()  # open files re-mark this proposal's lines
         self._update_detail_buttons()
         self._update_empty_states()
-        self._set_form_open(False)  # the diff gets the whole pane
+        self._set_form_open(False)  # the detail, not the form, owns the pane
         self._sync_review_minimum()
 
     def _load_test_tail(self, proposal_id: int) -> None:
         runs = self.store.list_test_runs(proposal_id=proposal_id)
         if not runs:
-            self.tests_output.setPlainText("(no test run recorded for this proposal yet)")
+            self.tests_output.show_text("(no test run recorded for this proposal yet)")
             self.tests_toggle.setEnabled(True)
             self.tests_toggle.setExpanded(False)
             self.tests_output.setVisible(False)
@@ -1836,7 +2034,7 @@ class MainWindow(QMainWindow):
             return
         run = runs[0]
         verdict = "PASSED" if run.passed else "FAILED"
-        self.tests_output.setPlainText(
+        self.tests_output.show_text(
             f"run {run.id} · {_middle(run.command, 56)} · exit {run.exit_code} · "
             f"{verdict} · {run.duration_ms} ms\n\n{run.output_tail}"
         )
@@ -1845,6 +2043,230 @@ class MainWindow(QMainWindow):
         failed_open = not run.passed
         self.tests_toggle.setExpanded(failed_open)
         self.tests_output.setVisible(failed_open)
+
+    # ---------------------------------------------------------------- diff tab
+    def _load_proposal_diff(self, proposal: Proposal) -> None:
+        """Background: HEAD content and the patch result, per touched file.
+
+        ``original`` is ``git show HEAD:<path>`` and ``modified`` is that content
+        with the file's own chunk applied **in a temp directory** — the working
+        tree is never touched, and an applied proposal still shows its before and
+        after.  When the chunk does not fit HEAD the file is shown as the raw
+        patch instead, which says exactly what the proposal contains.
+        """
+        try:
+            repo = self.store.get_repo(proposal.repo_id)
+        except SKError:
+            repo = None
+        if repo is None:
+            self._diff_patches, self._diff_pairs = [], []
+            self._show_diff_nothing("Repository for this proposal is gone.")
+            return
+        repo_path = Path(repo.path)
+        diff_text = proposal.diff
+        self._diff_request += 1
+        token = self._diff_request
+
+        def job(_store: Store, _settings: Settings):
+            patches = monaco_api.split_diff(diff_text)
+            return patches, [
+                monaco_api.original_and_modified(repo_path, patch) for patch in patches
+            ]
+
+        self.runner.submit(
+            "diff",
+            job,
+            on_ok=lambda result: self._after_diff_files(result, token, proposal.id),
+            on_error=lambda message: self._diff_files_failed(message, proposal.id),
+        )
+
+    def _diff_files_failed(self, message: str, proposal_id: int) -> None:
+        if self._selected_proposal_id != proposal_id:
+            return
+        self._show_diff_nothing(f"Diff unavailable: {message}")
+
+    def _after_diff_files(self, result, token: int, proposal_id: int) -> None:
+        if token != self._diff_request or self._selected_proposal_id != proposal_id:
+            return  # a newer selection has already replaced this one
+        patches, pairs = result
+        self._diff_patches = list(patches)
+        self._diff_pairs = list(pairs)
+        self._diff_auto_side = True
+        row = self._selected_diff_row()
+        self._fill_diff_file_list(patches)
+        if not patches:
+            self._show_diff_nothing("This proposal has no diff.")
+            return
+        self._suppress_signals = True
+        try:
+            self.diff_files.setCurrentIndex(
+                self.diff_file_model.index(row if 0 <= row < len(patches) else 0, 0)
+            )
+        finally:
+            self._suppress_signals = False
+        self._apply_diff_layout()
+        self._repaint_diff()
+
+    def _selected_diff_row(self) -> int:
+        """The current row of the file strip, or -1 when nothing is selected."""
+        index = self.diff_files.currentIndex()
+        return index.row() if index.isValid() else -1
+
+    def _fill_diff_file_list(self, patches: Sequence[monaco_api.FilePatch]) -> None:
+        """One compact row per touched file, with its ``+N/−M`` counts."""
+        self.diff_file_model.clear()
+        for patch in patches:
+            item = QStandardItem(str(patch.label))
+            item.setEditable(False)
+            item.setData((patch.added, patch.removed), Qt.ItemDataRole.UserRole)
+            item.setToolTip(patch.path or patch.old_path)
+            self.diff_file_model.appendRow(item)
+        self.diff_files.setVisible(len(patches) > 1)
+        rows = min(len(patches), FILE_LIST_MAX_ROWS) or 1
+        row_height = max(self.diff_files.sizeHintForRow(0), FILE_ROW_HEIGHT)
+        self.diff_files.setFixedHeight(rows * row_height + 2 * BORDER_WIDTH)
+
+    def _on_diff_file_selected(self, _index=None) -> None:
+        if self._suppress_signals:
+            return
+        self._repaint_diff()
+
+    def _on_side_by_side_toggled(self, side_by_side: bool) -> None:
+        self._diff_auto_side = False
+        self._diff_side_by_side = bool(side_by_side)
+        self._repaint_diff()
+
+    def _repaint_diff(self) -> None:
+        patches = self._diff_patches
+        if not patches:
+            return
+        row = self._selected_diff_row() if self.diff_files.isVisible() else 0
+        row = max(row, 0)
+        if row >= len(patches):
+            return
+        patch = patches[row]
+        pair = self._diff_pairs[row] if row < len(self._diff_pairs) else None
+        self.diff_title.setText(patch.label)
+        self.diff_title.setToolTip(patch.label)
+        if pair is None:
+            self.diff_hint.setText("raw patch — it does not fit HEAD")
+            self.side_by_side_button.setEnabled(False)
+            self.diff_view.show_text(patch.chunk)
+            return
+        self.diff_hint.setText(f"+{patch.added}  \u2212{patch.removed}")
+        self.side_by_side_button.setEnabled(True)
+        self.diff_view.show_diff(
+            pair[0], pair[1], patch.path or patch.old_path,
+            side_by_side=self._side_by_side_now(),
+        )
+
+    def _side_by_side_now(self) -> bool:
+        if self._diff_side_by_side is None:
+            self._diff_side_by_side = (
+                self.changes_page.width() >= SIDE_BY_SIDE_MIN_WIDTH
+            )
+        return bool(self._diff_side_by_side)
+
+    def _apply_diff_layout(self) -> None:
+        """Narrow pane means inline, until the user picks a layout themselves."""
+        if not self._diff_patches or not self._diff_auto_side:
+            return
+        wanted = self.changes_page.width() >= SIDE_BY_SIDE_MIN_WIDTH
+        if wanted == self._diff_side_by_side:
+            return
+        self._diff_side_by_side = wanted
+        self.side_by_side_button.blockSignals(True)
+        self.side_by_side_button.setChecked(wanted)
+        self.side_by_side_button.blockSignals(False)
+        self._repaint_diff()
+
+    # ------------------------------------------------------------- file tabs
+    def _on_file_activated(self, index) -> None:
+        """Double-click / Enter in the Files tree opens the file in a tab."""
+        if not index.isValid():
+            return
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        if str(text).endswith("/"):  # a directory: nothing to open
+            return
+        path = index.data(Qt.ItemDataRole.ToolTipRole) or ""
+        if path:
+            self.open_file_tab(str(path))
+
+    def open_file_tab(self, path: str) -> None:
+        """Open *path* read-only in Monaco, as a closable centre tab."""
+        path = str(path or "")
+        if not path:
+            return
+        for index in range(PERMANENT_TABS, self.tabs.count()):
+            if self.tabs.widget(index).property("skPath") == path:
+                self.tabs.setCurrentIndex(index)
+                return
+        repo = self.current_repo()
+        if repo is None:
+            return
+        repo_path = Path(repo.path)
+        proposal = self._selected_proposal()
+        lines = monaco_api.touched_lines(proposal.diff, path) if proposal else set()
+        self._file_request += 1
+        token = self._file_request
+
+        def job(_store: Store, _settings: Settings):
+            return monaco_api.working_tree_text(repo_path, path)
+
+        self.runner.submit(
+            f"open {path}",
+            job,
+            on_ok=lambda text: self._after_file_text(text, path, lines, token),
+            on_error=lambda message: self.say_error(f"open {path}: {message}"),
+        )
+
+    def _after_file_text(
+        self, text: Optional[str], path: str, lines: set[int], token: int
+    ) -> None:
+        if token != self._file_request:
+            return
+        view = MonacoView(self.palette, parent=None, name=path.rsplit("/", 1)[-1])
+        if text is None:
+            view.show_message(
+                f"{path}\n\nNot shown: the file is binary, missing, or too large "
+                f"for a preview."
+            )
+        else:
+            view.show_file(text, path, highlight_lines=lines)
+        view.setProperty("skPath", path)
+        index = self.tabs.addTab(view, _tab_title(path))
+        self.tabs.setTabToolTip(index, path)
+        if text is not None:  # only a real body is worth re-highlighting later
+            self._open_files[path] = (view, text)
+        # bound the renderer cost: the oldest extra file tab goes
+        while self.tabs.count() > PERMANENT_TABS + MAX_OPEN_FILES:
+            self._close_code_tab(PERMANENT_TABS)
+        self.tabs.setCurrentIndex(index)
+
+    def _refresh_file_highlights(self) -> None:
+        """Re-mark the lines the *newly* selected proposal touches."""
+        if not self._open_files:
+            return
+        proposal = self._selected_proposal()
+        for path, (view, text) in list(self._open_files.items()):
+            lines = monaco_api.touched_lines(proposal.diff, path) if proposal else set()
+            view.show_file(text, path, highlight_lines=lines)
+
+    def _close_code_tab(self, index: int) -> None:
+        if index < PERMANENT_TABS or index >= self.tabs.count():
+            return
+        widget = self.tabs.widget(index)
+        self.tabs.removeTab(index)
+        for path, (view, _text) in list(self._open_files.items()):
+            if view is widget:
+                del self._open_files[path]
+        if widget is not None:
+            widget.deleteLater()
+
+    def close_code_tabs_for_repo_switch(self) -> None:
+        self._open_files.clear()
+        while self.tabs.count() > PERMANENT_TABS:
+            self._close_code_tab(PERMANENT_TABS)
 
     # ------------------------------------------------------------- decisions
     def confirm(self, title: str, text: str) -> bool:
@@ -2137,6 +2559,7 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if getattr(self, "_right_ready", False):
             self._sync_review_minimum()
+        self._apply_diff_layout()  # cross 700px and the diff flips, if the user has not chosen
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt name
         self._save_geometry()
@@ -2151,6 +2574,7 @@ class MainWindow(QMainWindow):
 SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("Ctrl+1", "Show the Graph tab"),
     ("Ctrl+2", "Show the Proposals tab"),
+    ("Ctrl+3", "Show the Changes tab (the proposal diff)"),
     ("Ctrl+N", "New proposal (focus and clear the request form)"),
     ("Ctrl+Enter", "Submit the proposal request"),
     ("Ctrl+I", "Index the selected repository"),
@@ -2158,6 +2582,7 @@ SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("F5", "Refresh everything from the database"),
     ("F1", "Show this keyboard-shortcuts help"),
     ("Arrow keys", "Navigate the commit graph and tables"),
+    ("Enter / double-click", "Open a file from the Files tree in a tab"),
     ("Ctrl+Q", "Quit"),
 )
 
@@ -2228,6 +2653,16 @@ def _middle(text: str, limit: int) -> str:
     head = keep // 2
     tail = keep - head
     return flat[:head] + "…" + flat[-tail:]
+
+
+def _tab_title(path: str) -> str:
+    """Tab label for a repo path: the file name, with its folder for context."""
+    parts = [part for part in str(path).replace("\\", "/").split("/") if part]
+    if not parts:
+        return str(path)
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[-1]}  ({parts[-2]})"
 
 
 def _system_prefers_dark() -> Optional[bool]:
