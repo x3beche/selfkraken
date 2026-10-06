@@ -7,7 +7,7 @@ over by value; nothing here talks to SQLite or git.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional, Sequence
+from typing import Final, Optional, Sequence
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -16,11 +16,11 @@ from PySide6.QtCore import (
     QModelIndex,
     Qt,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QFontMetrics
 
 from selfkraken.db import Change, Proposal
 from selfkraken.graph import Branch, GraphRow
-from selfkraken.gui.theme import META_PT, Palette, UI_FONT
+from selfkraken.gui.theme import CELL_PADDING, SPACE_4, Palette
 
 
 def local_time(iso: str) -> str:
@@ -43,6 +43,35 @@ def local_time(iso: str) -> str:
 
 def _display_date(iso: str) -> str:
     return local_time(iso)
+
+
+#: the widest string :func:`local_time` can ever produce ("YYYY-MM-DD HH:MM")
+TIMESTAMP_SAMPLE: Final[str] = "0000-00-00 00:00"
+#: widest id-like value, so a column never truncates a real one
+ID_SAMPLE: Final[str] = "999999"
+
+
+def sized_column_width(
+    view,
+    value_text: str,
+    header_text: str,
+    *,
+    extra: int = 0,
+) -> int:
+    """Pixels a column needs for its widest expected value *and* its header.
+
+    Measured with the view's own font — the one the cells both paint and elide
+    in — plus the stylesheet's 6px cell padding.  Nothing is guessed from
+    pixels, so a wider system font widens the column instead of truncating it.
+    ``column`` is kept for callers that want per-column roles later.
+    """
+    # the view's own font is what the cells both paint and elide in, so it is
+    # the only font a column may be measured with
+    width = max(
+        QFontMetrics(view.font()).horizontalAdvance(value_text),
+        QFontMetrics(view.font()).horizontalAdvance(header_text),
+    )
+    return width + 2 * CELL_PADDING + SPACE_4 + extra
 
 
 def _one_line(text: str, limit: int = 160) -> str:
@@ -107,10 +136,6 @@ class GraphTableModel(QAbstractTableModel):
             return int(Qt.AlignLeft | Qt.AlignVCenter)
         if role == Qt.ForegroundRole and index.column() in (3, 4):
             return QColor(self._palette.muted)
-        if role == Qt.FontRole and index.column() in (3, 4):
-            font = QFont(UI_FONT)
-            font.setPointSizeF(META_PT)
-            return font
         return None
 
     # -- graph accessors for the delegate / view -------------------------
@@ -122,6 +147,10 @@ class GraphTableModel(QAbstractTableModel):
 
     def clear(self) -> None:
         self.set_rows([], [])
+
+    def rows(self) -> list[GraphRow]:
+        """Every row currently in the view (for measuring column widths)."""
+        return list(self._rows)
 
     def row_at(self, row: int) -> Optional[GraphRow]:
         if 0 <= row < len(self._rows):
@@ -268,10 +297,6 @@ class ProposalTableModel(QAbstractTableModel):
             return proposal.request
         if role == Qt.ForegroundRole and index.column() in (3, 4):
             return QColor(self._palette.muted)
-        if role == Qt.FontRole and index.column() in (3, 4):
-            font = QFont(UI_FONT)
-            font.setPointSizeF(META_PT)
-            return font
         return None
 
     def set_proposals(self, proposals: Sequence[Proposal]) -> None:
@@ -333,10 +358,6 @@ class LogTableModel(QAbstractTableModel):
             return change.detail
         if role == Qt.ForegroundRole and index.column() == 0:
             return QColor(self._palette.muted)
-        if role == Qt.FontRole and index.column() == 0:
-            font = QFont(UI_FONT)
-            font.setPointSizeF(META_PT)
-            return font
         return None
 
     def set_changes(self, changes: Sequence[Change]) -> None:
