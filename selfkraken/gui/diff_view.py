@@ -1,9 +1,11 @@
 """Read-only unified-diff viewer with syntax highlighting.
 
-``+`` lines green, ``-`` lines red, ``@@`` hunk headers cyan, file headers
-bold — plus subtle backgrounds so the colours never have to carry meaning
-alone (WCAG-friendly).  :meth:`DiffHighlighter.format_for_line` is a pure
-lookup that tests can call without a document.
+Body text is *regular weight monospace everywhere*: added lines green, removed
+lines red, ``@@`` hunk headers in the accent colour, and only the file headers
+(``diff --git`` / ``index`` / ``---`` / ``+++``) are bold.  Subtle backgrounds
+carry the meaning too, so colour is never the only signal (WCAG-friendly).
+:meth:`DiffHighlighter.format_for_line` is a pure lookup that tests can call
+without a document.
 """
 
 from __future__ import annotations
@@ -12,16 +14,20 @@ from typing import Optional
 
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 
-from selfkraken.gui.theme import MONO_FONT, Palette
+from selfkraken.gui.theme import MONO_FONT, MONO_PT, Palette
+
+#: the two weights the diff ever uses — nothing inherits a bold face
+NORMAL = QFont.Weight.Normal
+BOLD = QFont.Weight.Bold
 
 
-def _fmt(fg: str, bg: str = "", bold: bool = False) -> QTextCharFormat:
+def _fmt(fg: str, bg: str = "", weight: QFont.Weight = NORMAL) -> QTextCharFormat:
     fmt = QTextCharFormat()
     fmt.setForeground(QColor(fg))
     if bg:
         fmt.setBackground(QColor(bg))
-    if bold:
-        fmt.setFontWeight(QFont.Weight.Bold)
+    # always explicit: a bold widget font or a bold inherited block cannot leak
+    fmt.setFontWeight(int(weight))
     return fmt
 
 
@@ -33,10 +39,10 @@ class DiffHighlighter(QSyntaxHighlighter):
         self._palette = palette
         d = palette.diff
         self._formats: dict[str, QTextCharFormat] = {
-            "add": _fmt(d["add"][0], d["add"][1]),
-            "del": _fmt(d["del"][0], d["del"][1]),
-            "hunk": _fmt(d["hunk"][0], d["hunk"][1], bold=True),
-            "header": _fmt(d["header"][0], "", bold=True),
+            "add": _fmt(d["add"][0], d["add"][1], NORMAL),
+            "del": _fmt(d["del"][0], d["del"][1], NORMAL),
+            "hunk": _fmt(d["hunk"][0], d["hunk"][1], NORMAL),
+            "header": _fmt(d["header"][0], "", BOLD),
         }
 
     def format_for_line(self, text: str) -> Optional[QTextCharFormat]:
@@ -59,7 +65,7 @@ class DiffHighlighter(QSyntaxHighlighter):
             self.setFormat(0, len(text), fmt)
 
 
-def monospace_font(point_size: float = 9.5) -> QFont:
+def monospace_font(point_size: float = MONO_PT) -> QFont:
     """The GUI's diff/console font with a sensible family."""
     font = QFont(MONO_FONT)
     font.setPointSizeF(point_size)

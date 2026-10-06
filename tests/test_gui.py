@@ -23,8 +23,8 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextDocument  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtGui import QFontMetrics, QTextDocument  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 
 from selfkraken import workflow  # noqa: E402
 from selfkraken.config import Settings, load_settings  # noqa: E402
@@ -99,7 +99,7 @@ def test_main_window_constructs_with_empty_db_and_shows_empty_state(window) -> N
     assert window.proposals_stack.currentIndex() == 0
     texts = [
         label.text()
-        for label in window.graph_guidance.findChildren(type(window.status_label))
+        for label in window.graph_guidance.findChildren(QLabel)
     ]
     assert any("No repositories yet" in text for text in texts)
     assert "Degraded mode" in window.model_status.text()  # no model configured
@@ -129,6 +129,145 @@ def test_request_validation_is_inline_and_textual(window) -> None:
     assert not valid and "too long" in message
     valid, message = window.validate_request("guard the division")
     assert valid and message == ""
+
+
+# --------------------------------------------------------------------------- #
+# layout: nothing may clip at the smallest supported window size
+# --------------------------------------------------------------------------- #
+def _visible_labels(widget):
+    from PySide6.QtWidgets import QLabel
+
+    for label in widget.findChildren(QLabel):
+        if not label.isVisible() or not label.text().strip():
+            continue
+        yield label
+
+
+def _assert_no_clipped_labels(window, note=""):
+    """No QLabel may be shorter than the height it asks for."""
+    clipped = []
+    for label in _visible_labels(window):
+        needed = label.sizeHint().height()
+        if label.height() < needed:
+            clipped.append(
+                f"{label.text()[:38]!r} height={label.height()} needs={needed}"
+            )
+    assert not clipped, f"clipped labels ({note}):\n  " + "\n  ".join(clipped)
+
+
+def test_main_window_at_1024x700_has_no_clipped_labels(
+    qapp, gui_settings, no_dialogs, git_repo, make_patch, sources, test_command
+) -> None:
+    """Every state the review pane can hold, at the smallest window we support.
+
+    The offscreen platform is exactly what the screenshots are taken with, so
+    this is the same layout the pictures show: dock titles, section headers,
+    the two-column commit form and the toolbar pill all have to fit their text.
+    """
+    from selfkraken.gui.app import MainWindow, apply_theme
+    from selfkraken.gui.theme import DARK
+
+    previous = qapp.styleSheet()
+    apply_theme(qapp, DARK)
+    window = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        window.resize(1024, 700)
+        window.show()
+        qapp.processEvents()
+        _assert_no_clipped_labels(window, "empty state")
+
+        window.add_repo(git_repo, test_command)
+        window.index_repo()
+        qapp.processEvents()
+        _assert_no_clipped_labels(window, "repository loaded")
+
+        window.graph_view.select_row(0)
+        qapp.processEvents()
+        _assert_no_clipped_labels(window, "commit details open")
+
+        patch = make_patch(
+            git_repo,
+            {"calc.py": sources["calc_with_sub"], "test_calc.py": sources["test_calc_with_sub"]},
+        )
+        window.submit_proposal("Add a sub() function with a test", diff_text=patch)
+        window.tabs.setCurrentIndex(1)
+        qapp.processEvents()
+        _assert_no_clipped_labels(window, "proposal detail open")
+
+        window.diff_box.setChecked(True)
+        window.tests_toggle.setExpanded(True)
+        qapp.processEvents()
+        _assert_no_clipped_labels(window, "manual diff + test output open")
+
+        assert window.width() >= 1024 and window.height() >= 700
+        assert window.minimumWidth() <= 1024, "the window must be able to reach 1024 wide"
+    finally:
+        window.close()
+        qapp.setStyleSheet(previous)
+
+
+def test_window_geometry_is_remembered_in_the_data_dir(
+    qapp, gui_settings, no_dialogs
+) -> None:
+    """The window comes back the size you left it, stored beside the database."""
+    import json
+
+    from selfkraken.gui.app import MainWindow, WINDOW_STATE_FILENAME
+
+    first = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    first.resize(1100, 720)
+    first.show()
+    qapp.processEvents()
+    first.close()
+
+    state_file = Path(gui_settings.data_dir) / WINDOW_STATE_FILENAME
+    assert state_file.exists(), "geometry belongs in the app's own data dir"
+    stored = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (stored["w"], stored["h"]) == (1100, 720)
+
+    second = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        assert (second.width(), second.height()) == (1100, 720)
+    finally:
+        second.close()
+
+
+def test_graph_column_is_never_narrower_than_its_header(qapp, git_repo) -> None:
+    """One lane used to elide the "Graph" header to "ra|"."""
+    from selfkraken.gui.graph_widget import GraphView, graph_column_minimum
+    from selfkraken.graph import layout, read_commits
+
+    view = GraphView(DARK)
+    try:
+        view.set_rows(layout(read_commits(git_repo)), [])
+        qapp.processEvents()
+        assert view.table_model.max_lanes <= 1, "a linear repo keeps the lane count down"
+        width = view.columnWidth(0)
+        needed = QFontMetrics(view.horizontalHeader().font()).horizontalAdvance("Graph")
+        assert width >= graph_column_minimum(), f"column {width} < the header's own budget"
+        assert width > needed, f"{width}px cannot fit the {needed}px header"
+    finally:
+        view.close()
+
+
+def test_stylesheet_is_built_from_the_design_tokens() -> None:
+    """One border width, one radius, one font tier pair — no ad-hoc numbers."""
+    from selfkraken.gui import theme
+    from selfkraken.gui.theme import stylesheet
+
+    css = stylesheet(DARK)
+    assert f"font-size: {theme.FONT_PT:g}pt" in css
+    assert f"font-size: {theme.META_PT:g}pt" in css
+    assert "2px solid" not in css, "focus must not change the border width"
+    assert css.count(f"{theme.BORDER_WIDTH}px solid") > 10
+    assert f"border-radius: {theme.RADIUS}px" in css
+    # the spacing scale is the only source of gaps
+    for token in (theme.SPACE_2, theme.SPACE_4, theme.SPACE_6, theme.SPACE_8, theme.SPACE_12):
+        assert f"{token}px" in css
+    assert theme.SPACING_SCALE == (2, 4, 6, 8, 12)
+    assert theme.ROW_HEIGHT == theme.HEADER_HEIGHT == theme.DOCK_TITLE_HEIGHT == 22
+    assert theme.BUTTON_HEIGHT == theme.INPUT_HEIGHT == 24
+    assert theme.STATUS_BAR_HEIGHT == 20
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +336,16 @@ def test_diff_highlighter_formats_added_and_removed_lines_differently(qapp) -> N
     assert hunk is not None and hunk.foreground().color() != added.foreground().color()
     assert header is not None and header.fontWeight() > added.fontWeight()
     assert context is None
+    # only the file headers are bold: body, +/- and @@ stay regular weight mono
+    from PySide6.QtGui import QFont
+
+    regular = int(QFont.Weight.Normal)
+    bold = int(QFont.Weight.Bold)
+    assert header.fontWeight() == bold
+    for fmt in (added, removed, hunk):
+        assert fmt.fontWeight() == regular, "diff body text must not be bold"
+    # the hunk header uses the theme's accent, not a third hue
+    assert hunk.foreground().color().name() == DARK.accent
 
 
 def test_file_tree_expands_and_marks_changed_files(qapp) -> None:

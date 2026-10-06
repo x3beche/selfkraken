@@ -20,7 +20,7 @@ from PySide6.QtGui import QColor, QFont
 
 from selfkraken.db import Change, Proposal
 from selfkraken.graph import Branch, GraphRow
-from selfkraken.gui.theme import Palette, UI_FONT
+from selfkraken.gui.theme import META_PT, Palette, UI_FONT
 
 
 def local_time(iso: str) -> str:
@@ -109,7 +109,7 @@ class GraphTableModel(QAbstractTableModel):
             return QColor(self._palette.muted)
         if role == Qt.FontRole and index.column() in (3, 4):
             font = QFont(UI_FONT)
-            font.setPointSizeF(9.0)
+            font.setPointSizeF(META_PT)
             return font
         return None
 
@@ -202,18 +202,23 @@ class GraphTableModel(QAbstractTableModel):
         )
         return " ⇄ origin" if has_remote_twin else ""
 
-    def lane_column_width(self, lane_width: int, left_pad: int) -> int:
-        """Pixels needed by the lane block of column 0."""
-        return left_pad * 2 + lane_width * max(self.max_lanes, 1)
+    def lane_column_width(self, lane_width: int, left_pad: int, minimum: int = 0) -> int:
+        """Pixels needed by the lane block of column 0 (never below *minimum*)."""
+        return max(minimum, left_pad * 2 + lane_width * max(self.max_lanes, 1))
 
-    def refs_column_width(self, metrics, badge_gap: int) -> int:
+    def refs_column_width(
+        self, metrics, badge_gap: int, badge_h_pad: int
+    ) -> int:
         """Pixels needed by the widest badge run in the Refs column."""
         widest = 0
         for row in range(len(self._rows)):
             badges = self.badges_for(row)
             if not badges:
                 continue
-            total = sum(metrics.horizontalAdvance(text) + 12 for text, _kind in badges)
+            total = sum(
+                metrics.horizontalAdvance(text) + 2 * badge_h_pad
+                for text, _kind in badges
+            )
             widest = max(widest, total + badge_gap * (len(badges) - 1))
         return widest
 
@@ -226,8 +231,9 @@ class ProposalTableModel(QAbstractTableModel):
 
     COLUMNS = ("Id", "Status", "Request", "Model", "Created")
 
-    def __init__(self, parent: Optional[object] = None) -> None:
+    def __init__(self, palette: Palette, parent: Optional[object] = None) -> None:
         super().__init__(parent)
+        self._palette = palette
         self._proposals: list[Proposal] = []
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
@@ -260,8 +266,12 @@ class ProposalTableModel(QAbstractTableModel):
             return None
         if role == Qt.ToolTipRole and index.column() == 2:
             return proposal.request
-        if role == Qt.TextAlignmentRole and index.column() == 0:
-            return int(Qt.AlignRight | Qt.AlignVCenter)
+        if role == Qt.ForegroundRole and index.column() in (3, 4):
+            return QColor(self._palette.muted)
+        if role == Qt.FontRole and index.column() in (3, 4):
+            font = QFont(UI_FONT)
+            font.setPointSizeF(META_PT)
+            return font
         return None
 
     def set_proposals(self, proposals: Sequence[Proposal]) -> None:
@@ -323,6 +333,10 @@ class LogTableModel(QAbstractTableModel):
             return change.detail
         if role == Qt.ForegroundRole and index.column() == 0:
             return QColor(self._palette.muted)
+        if role == Qt.FontRole and index.column() == 0:
+            font = QFont(UI_FONT)
+            font.setPointSizeF(META_PT)
+            return font
         return None
 
     def set_changes(self, changes: Sequence[Change]) -> None:
