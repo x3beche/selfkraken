@@ -28,17 +28,46 @@ from PySide6.QtWidgets import (
 from selfkraken.gitops import run_git
 from selfkraken.graph import Branch, GraphRow
 from selfkraken.gui.models import GraphTableModel
-from selfkraken.gui.theme import UI_FONT, Palette
+from selfkraken.gui.theme import (
+    BADGE_GAP,
+    BADGE_H_PAD,
+    BADGE_HEIGHT,
+    BADGE_RADIUS,
+    BORDER_WIDTH,
+    CELL_PADDING,
+    GRAPH_ROW_HEIGHT,
+    META_PT,
+    SPACE_6,
+    UI_FONT,
+    Palette,
+)
 
-ROW_HEIGHT = 30
-LANE_WIDTH = 18
-LANE_LEFT_PAD = 6
-DOT_RADIUS = 5.0
+#: row metrics — taken from the shared design system (graph rows run 24px)
+ROW_HEIGHT = GRAPH_ROW_HEIGHT
+LANE_WIDTH = 14  # lane pitch: dot centre to dot centre
+LANE_LEFT_PAD = SPACE_6  # lane block inset, mirrored on the right
+DOT_RADIUS = 4.0
 LINE_WIDTH = 2.0
-BADGE_HEIGHT = 17
-BADGE_GAP = 6
-BADGE_FONT_PT = 7.5
+BADGE_FONT_PT = META_PT
 REFS_COLUMN_MAX = 178
+
+
+def header_font() -> QFont:
+    """The font the styled header sections actually use."""
+    font = QFont(UI_FONT)
+    font.setPointSizeF(META_PT)
+    font.setBold(True)
+    return font
+
+
+def graph_column_minimum(title: str = "Graph") -> int:
+    """Column 0 is never narrower than its own header text.
+
+    With a single lane the lane block alone is ~20px, which used to elide
+    "Graph" down to "ra|"; now the header always fits.
+    """
+    metrics = QFontMetrics(header_font())
+    return metrics.horizontalAdvance(title) + 2 * CELL_PADDING + 2 * BORDER_WIDTH
 
 
 def lane_x(rect: QRect, lane: int) -> float:
@@ -112,9 +141,9 @@ def paint_lane_cell(
     if len(commit.parents) >= 2:
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(colour)
-        painter.drawEllipse(centre, DOT_RADIUS + 2.2, DOT_RADIUS + 2.2)
+        painter.drawEllipse(centre, DOT_RADIUS + 2.0, DOT_RADIUS + 2.0)
         painter.setBrush(QColor(palette.selection_bg if selected else palette.base))
-        painter.drawEllipse(centre, DOT_RADIUS - 2.2, DOT_RADIUS - 2.2)
+        painter.drawEllipse(centre, DOT_RADIUS - 2.0, max(DOT_RADIUS - 2.0, 1.0))
     else:
         painter.setPen(QPen(colour.darker(130), 1.0))
         painter.setBrush(colour)
@@ -145,17 +174,17 @@ def paint_refs_cell(
     font = QFont(UI_FONT)
     font.setPointSizeF(BADGE_FONT_PT)
     painter.setFont(font)
-    x = float(rect.left() + 4)
+    x = float(rect.left() + CELL_PADDING)
     centre_y = rect.top() + ROW_HEIGHT / 2.0
     for text, kind in badges:
         fg, bg, border = palette.badge.get(kind, palette.badge["local"])
-        width = metrics.horizontalAdvance(text) + 12
+        width = metrics.horizontalAdvance(text) + 2 * BADGE_H_PAD
         box = QRectF(x, centre_y - BADGE_HEIGHT / 2.0, width, BADGE_HEIGHT)
-        if box.right() > rect.right() - 2:
+        if box.right() > rect.right() - BORDER_WIDTH:
             break  # clipped run: never paint overlapping or cut-off badges
         painter.setPen(QPen(QColor(border), 1.0))
         painter.setBrush(QColor(bg))
-        painter.drawRoundedRect(box, 4, 4)
+        painter.drawRoundedRect(box, BADGE_RADIUS, BADGE_RADIUS)
         painter.setPen(QPen(QColor(fg)))
         painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
         x += width + BADGE_GAP
@@ -184,12 +213,23 @@ class GraphDelegate(QStyledItemDelegate):
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: N802
         # every row gets the same height, so lanes connect without gaps
         if index.column() == 0:
-            width = self._table_model.lane_column_width(LANE_WIDTH, LANE_LEFT_PAD)
+            width = self._table_model.lane_column_width(
+                LANE_WIDTH, LANE_LEFT_PAD, graph_column_minimum()
+            )
             return QSize(width, ROW_HEIGHT)
         if index.column() == 1:
-            width = self._table_model.refs_column_width(self._badge_metrics, BADGE_GAP)
-            return QSize(min(width + 12, REFS_COLUMN_MAX), ROW_HEIGHT)
+            return QSize(self.refs_width(), ROW_HEIGHT)
         return QSize(super().sizeHint(option, index).width(), ROW_HEIGHT)
+
+    def refs_width(self) -> int:
+        """Refs column: the widest badge run, capped, never below its header."""
+        run = self._table_model.refs_column_width(
+            self._badge_metrics, BADGE_GAP, BADGE_H_PAD
+        )
+        header = QFontMetrics(header_font()).horizontalAdvance(
+            self._table_model.COLUMNS[1]
+        )
+        return min(max(run + 2 * CELL_PADDING, header + 2 * CELL_PADDING), REFS_COLUMN_MAX)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:  # noqa: D102
         column = index.column()
@@ -238,6 +278,7 @@ class GraphView(QTableView):
         self.setItemDelegate(self.graph_delegate)
 
         self.setShowGrid(False)
+        self.setAlternatingRowColors(False)  # lanes must read as one continuous grid
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -246,8 +287,12 @@ class GraphView(QTableView):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setWordWrap(False)
         self.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.horizontalHeader().setHighlightSections(False)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        header = self.horizontalHeader()
+        header.setHighlightSections(False)
+        header.setSectionsMovable(False)
+        header.setMinimumSectionSize(2 * SPACE_6)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self.selectionModel().selectionChanged.connect(self._emit_selection)
         self.setAccessibleName("Commit graph")
@@ -280,16 +325,15 @@ class GraphView(QTableView):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.setColumnWidth(
-            0, self.table_model.lane_column_width(LANE_WIDTH, LANE_LEFT_PAD)
+            0,
+            self.table_model.lane_column_width(
+                LANE_WIDTH, LANE_LEFT_PAD, graph_column_minimum()
+            ),
         )
-        refs_width = self.table_model.refs_column_width(
-            QFontMetrics(self.graph_delegate.badge_font), BADGE_GAP
-        )
-        self.setColumnWidth(1, min(refs_width + 12, REFS_COLUMN_MAX))
-        self.setColumnWidth(3, 100)
-        self.setColumnWidth(4, 126)
+        self.setColumnWidth(1, self.graph_delegate.refs_width())
+        self.setColumnWidth(3, 130)
 
     def _emit_selection(self, _selected, _deselected) -> None:
         rows = self.selectionModel().selectedRows()
