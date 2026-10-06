@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 from PySide6.QtCore import QTimer, QUrl, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QPlainTextEdit, QVBoxLayout, QWidget
 
 from selfkraken.gui import monaco_payload as mp
@@ -351,6 +352,9 @@ class MonacoView(QWidget):
         }
         try:
             self._page = page_class(_PROFILE, self)
+            # paint the view in the app's own colour before the page has drawn
+            # anything: a dark window must not flash white while Monaco boots
+            self._page.setBackgroundColor(QColor(self._palette.base))
             settings = self._page.settings()
             attributes = settings_class.WebAttribute
             for name, enabled in wanted.items():
