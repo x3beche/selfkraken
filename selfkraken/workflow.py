@@ -31,7 +31,7 @@ from selfkraken.errors import (
     SKError,
     ValidationError,
 )
-from selfkraken.gitops import commit_paths, repo_root
+from selfkraken.gitops import changed_paths, commit_paths, repo_root
 from selfkraken.indexer import build_context
 from selfkraken.llm import (
     SYSTEM_PROMPT,
@@ -198,6 +198,18 @@ def apply_proposal(
     repo_path = Path(repo.path)
 
     paths = validate_diff(proposal.diff, repo_path)
+
+    if commit:
+        # The commit would carry every uncommitted change in the touched paths,
+        # not just the proposal's — refuse rather than swallow the user's WIP.
+        dirty = sorted(set(paths) & set(changed_paths(repo_path)))
+        if dirty:
+            raise ValidationError(
+                f"cannot --commit: uncommitted changes in {len(dirty)} touched "
+                f"file(s): {', '.join(dirty)}; commit or stash them first, or "
+                "apply without --commit"
+            )
+
     apply_diff(repo_path, proposal.diff)
     proposal = store.set_proposal_status(proposal.id, "applied")
     store.record_change(

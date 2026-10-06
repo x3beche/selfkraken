@@ -341,6 +341,46 @@ def test_apply_commit_creates_git_commit(
     assert str(proposal.id) in subject
 
 
+def test_apply_commit_refuses_uncommitted_changes_in_touched_paths(
+    store: Store, settings, repo: Repo, git_repo: Path, make_patch, sources
+) -> None:
+    """--commit never swallows the user's WIP: a dirty touched path is refused up front."""
+    # Grow calc.py and commit it, so a user edit can sit far away from the patch's
+    # hunk (a clean apply is still possible — it is the commit that must be refused).
+    base = sources["calc"] + "\n".join(f"def f{i}():\n    return {i}" for i in range(10)) + "\n"
+    (git_repo / "calc.py").write_text(base, encoding="utf-8")
+    gitops.run_git(git_repo, "add", "calc.py")
+    gitops.run_git(git_repo, "commit", "-q", "-m", "grow calc")
+    head_before = gitops.head_sha(git_repo)
+
+    diff = make_patch(git_repo, {"calc.py": base + "\n\ndef sub(a, b):\n    return a - b\n"})
+    proposal = propose(store, settings, repo, "Add sub", diff_text=diff)
+
+    user_edit = "# user work in progress\n" + base
+    (git_repo / "calc.py").write_text(user_edit, encoding="utf-8")
+
+    with pytest.raises(ValidationError) as caught:
+        apply_proposal(store, settings, proposal.id, commit=True)
+
+    message = str(caught.value)
+    assert "uncommitted" in message and "calc.py" in message
+    assert "commit or stash" in message
+
+    # nothing applied, nothing committed, no new audit records, still proposed
+    assert (git_repo / "calc.py").read_text(encoding="utf-8") == user_edit
+    assert gitops.head_sha(git_repo) == head_before
+    kinds = _kinds(store, repo.id)
+    assert "apply" not in kinds and "commit" not in kinds
+    assert store.get_proposal(proposal.id).status == "proposed"
+
+    # without --commit applying onto the dirty tree stays allowed, edit survives
+    outcome = apply_proposal(store, settings, proposal.id, run_tests=False)
+    assert outcome.proposal.status == "applied"
+    on_disk = (git_repo / "calc.py").read_text(encoding="utf-8")
+    assert on_disk.startswith("# user work in progress")
+    assert "def sub" in on_disk
+
+
 def test_apply_is_rejected_the_second_time(
     store: Store, settings, repo: Repo, git_repo: Path, make_patch, sources
 ) -> None:
