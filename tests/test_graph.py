@@ -88,9 +88,13 @@ def test_lane_state_carries_across_rows(demo_repo: Path) -> None:
     rows = layout(read_commits(demo_repo))
     for before, after in zip(rows, rows[1:]):
         assert before.lanes_out == after.lanes_in, before.commit.subject
-    for row in rows:
-        waiting = [s for s in row.lanes_out if s]
-        assert len(waiting) == len(set(waiting)), "one sha tracked by two lanes"
+    # a sha may be tracked by several lanes (converging branches); every
+    # lane entry must be a sha of a commit that appears later, or None
+    shas = {row.commit.sha for row in rows}
+    positions = {row.commit.sha: i for i, row in enumerate(rows)}
+    for i, row in enumerate(rows):
+        for lane in row.lanes_out:
+            assert lane is None or (lane in shas and positions[lane] > i)
 
 
 def test_column_valid(demo_repo: Path) -> None:
@@ -121,6 +125,32 @@ def test_lane_count_stays_bounded(demo_repo: Path) -> None:
     lanes = max(max(len(r.lanes_in), len(r.lanes_out)) for r in rows)
     # multibranch peaks at 3, octopus at 4: well under a generous bound
     assert lanes <= 6
+
+
+def test_main_first_parent_chain_stays_in_column_zero(tmp_path: Path) -> None:
+    """The HEAD branch's first-parent chain must occupy ONE column (0)."""
+    repo = make_multibranch_repo(tmp_path / "repo")
+    commits = read_commits(repo)
+    rows = layout(commits)
+    by_sha = {row.commit.sha: row for row in rows}
+    head = next(c for c in commits if "HEAD" in c.refs)
+    chain: list[str] = []
+    sha: str | None = head.sha
+    while sha is not None:
+        row = by_sha[sha]
+        chain.append(sha)
+        sha = row.commit.parents[0] if row.commit.parents else None
+    assert len(chain) >= 6, "expected a decent first-parent chain"
+    for sha in chain:
+        assert by_sha[sha].column == 0, (
+            f"{by_sha[sha].commit.subject} left column 0"
+        )
+
+
+def test_multibranch_max_column_bounded(tmp_path: Path) -> None:
+    repo = make_multibranch_repo(tmp_path / "repo")
+    rows = layout(read_commits(repo))
+    assert max(r.column for r in rows) <= 3
 
 
 def test_children_converge_into_leftmost_lane(demo_repo: Path) -> None:

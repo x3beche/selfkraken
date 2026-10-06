@@ -220,9 +220,11 @@ def layout(commits: list[Commit]) -> list[GraphRow]:
     Input must be in topological order (children before parents), as produced
     by ``git log --topo-order``. Each commit takes the lane that is waiting
     for it (leftmost when several — the others merge into it and are freed);
-    otherwise the leftmost free lane, or a new lane. The first parent keeps
-    the commit in the same lane; extra parents (merges) reuse the lane that
-    already waits for that sha or take a free/new lane.
+    otherwise the leftmost free lane, or a new lane. The first parent always
+    inherits the commit's own column (possibly tracked twice, converging when
+    it renders), keeping a branch's first-parent chain in one column. Extra
+    parents (merges) reuse the lane that already waits for that sha or take a
+    free/new lane. Trailing empty lanes are trimmed.
     """
     rows: list[GraphRow] = []
     lanes: list[str | None] = []
@@ -248,18 +250,19 @@ def layout(commits: list[Commit]) -> list[GraphRow]:
         parents = list(commit.parents)
         if parents:
             first = parents[0]
-            k = _find_lane(state, first)
-            if k is None:
-                state[column] = first  # first parent continues in this lane
-            # else: another lane already tracks the first parent; this lane
-            # merges into it (column stays free below).
+            # The first parent ALWAYS inherits the commit's own column, so a
+            # branch's first-parent chain never migrates lanes. When another
+            # lane already tracks `first` (two branches share this ancestor),
+            # the sha is intentionally tracked twice: when `first` renders it
+            # takes the leftmost waiting lane and the other lane is drawn
+            # merging into it.
+            state[column] = first
             for extra in parents[1:]:
                 if _find_lane(state, extra) is not None:
                     continue  # a lane already carries this parent
                 # Prefer plain free lanes over lanes just freed by an incoming
                 # merge, so a lane never needs an in-edge and an out-edge in
-                # the same row. A free `column` is a valid slot: the edge then
-                # runs straight down from the commit node.
+                # the same row.
                 candidate = next(
                     (i for i, sha in enumerate(state) if sha is None and i not in freed_incoming),
                     None,

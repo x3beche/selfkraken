@@ -3,10 +3,11 @@
 Usage:  PYTHONPATH=. python scripts/screenshots.py [--out docs/screenshots]
 
 Always writes graph.svg / branches.svg / tree.svg for the multibranch demo
-fixture. If the full `selfkraken.cli` module is importable (built by another
-agent), also runs a complete CLI demo session in a throwaway SK_DATA_DIR and
-saves each command's captured output as cli-<command>.svg. Skips that part
-gracefully when the CLI does not exist yet.
+fixture (the tree highlights the files the demo proposal touches, which live
+under src/). If the full ``selfkraken.cli`` module is importable, also runs a
+complete CLI demo session in a throwaway SK_DATA_DIR and saves each command's
+captured output as cli-<command>.svg. Skips that part gracefully when the CLI
+does not exist yet.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,8 +32,6 @@ from fixtures_git import make_multibranch_repo  # noqa: E402
 from selfkraken.graph import _git  # noqa: E402
 from selfkraken.views import render_branches, render_file_tree, render_graph  # noqa: E402
 
-HIGHLIGHT = {"src/app/core.py", "README.md"}
-
 
 def _save_svg(path: Path, renderable, title: str) -> None:
     console = Console(record=True, width=110)
@@ -40,7 +40,7 @@ def _save_svg(path: Path, renderable, title: str) -> None:
     console.save_svg(str(path), title=title)
 
 
-def render_views(repo: Path, out: Path) -> list[Path]:
+def render_views(repo: Path, out: Path, highlight: set[str]) -> list[Path]:
     written: list[Path] = []
     jobs = [
         ("graph.svg", render_graph(repo, limit=50), "selfkraken graph"),
@@ -56,7 +56,7 @@ def render_views(repo: Path, out: Path) -> list[Path]:
         (
             "tree.svg",
             render_file_tree(
-                "demo-app", files, highlight=HIGHLIGHT, sizes=sizes, max_depth=3
+                "demo-app", files, highlight=highlight, sizes=sizes, max_depth=3
             ),
             "selfkraken file tree",
         )
@@ -76,22 +76,29 @@ def cli_available() -> bool:
         return False
 
 
-def _make_demo_diff(repo: Path, patch_file: Path) -> None:
-    """Create a valid unified diff (a README note) then restore the worktree."""
-    readme = repo / "README.md"
-    original = readme.read_text(encoding="utf-8")
-    readme.write_text(original + "\n## Proposal demo\n\nAdded via skraken propose --diff-file.\n", encoding="utf-8")
-    diff = _git(repo, "diff", "--", "README.md")
-    readme.write_text(original, encoding="utf-8")  # restore clean worktree
+def _make_demo_diff(repo: Path, patch_file: Path) -> set[str]:
+    """Build a valid unified diff touching src/app/core.py; restore the worktree.
+
+    Returns the set of touched paths so the tree screenshot can highlight them.
+    """
+    target = repo / "src" / "app" / "core.py"
+    original = target.read_text(encoding="utf-8")
+    target.write_text(
+        original
+        + '\n\ndef proposal_note() -> str:\n    """Added by the skraken propose demo."""\n    return "applied via skraken apply"\n',
+        encoding="utf-8",
+    )
+    diff = _git(repo, "diff", "--", "src/app/core.py")
+    target.write_text(original, encoding="utf-8")  # restore clean worktree
     patch_file.write_text(diff, encoding="utf-8")
+    touched = set(re.findall(r"^\+\+\+ b/(.+)$", diff, flags=re.MULTILINE))
+    return touched or {"src/app/core.py"}
 
 
-def run_cli_demo(repo: Path, out: Path, work: Path) -> list[Path]:
+def run_cli_demo(repo: Path, out: Path, work: Path, patch_file: Path) -> list[Path]:
     written: list[Path] = []
     data_dir = work / "sk-data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    patch_file = work / "proposal.diff"
-    _make_demo_diff(repo, patch_file)
 
     env = {
         key: value
@@ -109,29 +116,28 @@ def run_cli_demo(repo: Path, out: Path, work: Path) -> list[Path]:
 
     py = sys.executable
     commands: list[tuple[str, list[str]]] = [
-        ("doctor", ["-m", "selfkraken", "doctor"]),
-        ("init", ["-m", "selfkraken", "init", str(repo), "--test-cmd", f"{py} -m pytest -q"]),
-        ("index", ["-m", "selfkraken", "index"]),
-        ("tree", ["-m", "selfkraken", "tree"]),
-        ("graph", ["-m", "selfkraken", "graph"]),
+        ("doctor", ["doctor"]),
+        ("init", ["init", str(repo), "--test-cmd", f"{py} -m pytest -q"]),
+        ("index", ["index"]),
+        ("tree", ["tree"]),
+        ("graph", ["graph"]),
+        ("branches", ["branches"]),
         (
             "propose",
             [
-                "-m",
-                "selfkraken",
                 "propose",
-                "Document the proposal workflow in README",
+                "Add a proposal_note() helper to src/app/core.py",
                 "--diff-file",
                 str(patch_file),
                 "--yes",
             ],
         ),
-        ("show", ["-m", "selfkraken", "show", "1"]),
-        ("apply", ["-m", "selfkraken", "apply", "1", "--yes"]),
-        ("log", ["-m", "selfkraken", "log"]),
+        ("show", ["show", "1"]),
+        ("apply", ["apply", "1", "--yes"]),
+        ("log", ["log"]),
     ]
-    for name, argv in commands:
-        cmd = [py, *argv]
+    for name, args in commands:
+        cmd = [py, "-m", "selfkraken", *args]
         returncode = 0
         try:
             proc = subprocess.run(
@@ -152,7 +158,7 @@ def run_cli_demo(repo: Path, out: Path, work: Path) -> list[Path]:
         if returncode != 0:
             print(f"  note: skraken {name} exited {returncode} — captured anyway")
         target = out / f"cli-{name}.svg"
-        _save_svg(target, Text.from_ansi(output), f"skraken {' '.join(argv[1:])}")
+        _save_svg(target, Text.from_ansi(output), f"$ skraken {' '.join(args)}")
         written.append(target)
         print(f"wrote {target}")
     return written
@@ -168,10 +174,12 @@ def main() -> int:
         work = Path(tmp)
         repo = make_multibranch_repo(work / "demo-app")
         print(f"built demo repo at {repo}")
-        written = render_views(repo, out)
+        patch_file = work / "proposal.diff"
+        touched = _make_demo_diff(repo, patch_file)
+        written = render_views(repo, out, highlight=touched)
         if cli_available():
             print("selfkraken.cli found — running full CLI demo session")
-            written += run_cli_demo(repo, out, work)
+            written += run_cli_demo(repo, out, work, patch_file)
         else:
             print("selfkraken.cli not importable yet — skipping CLI session screenshots")
 
