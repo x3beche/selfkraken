@@ -145,7 +145,9 @@ def cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "SK_TEST_TIMEOUT",
     ):
         monkeypatch.delenv(variable, raising=False)
-    # rich must not hard-wrap the lines the tests assert on.
+    # rich must not hard-wrap the lines the tests assert on: pin the width at
+    # render time (the CLI console resolves COLUMNS live, not at import).
+    monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setenv("COLUMNS", "200")
     return data_dir
 
