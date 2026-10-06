@@ -1,0 +1,48 @@
+{
+  "name": "monaco-editor",
+  "version": "0.57.0",
+  "integrity": "sha512-5BkI9KGoqrNvBGUe15/QlZq3OooZ8WLg1AxTpaqHRCP3HNpzPPZKE2EDz8M7c+VRmCeUw1Brp4cx/PWm3kI/5A==",
+  "tarball": "https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.57.0.tgz",
+  "license": "MIT",
+  "vendored_by": "scripts/vendor_monaco.py",
+  "pruned": {
+    "source_maps": true,
+    "vs_dirs": [
+      "language",
+      "nls/lang"
+    ],
+    "languages_kept": [
+      "c",
+      "cpp",
+      "csharp",
+      "css",
+      "dockerfile",
+      "go",
+      "html",
+      "ini",
+      "java",
+      "javascript",
+      "json",
+      "markdown",
+      "php",
+      "python",
+      "ruby",
+      "rust",
+      "shell",
+      "sql",
+      "typescript",
+      "xml",
+      "yaml"
+    ],
+    "files": {
+      "maps": 0,
+      "legacy_language_or_nls": 34,
+      "other_languages": 62,
+      "unwanted_top_level": 1765,
+      "chunks_known": 89,
+      "chunks_kept": 19,
+      "written": 57
+    }
+  },
+  "note": "min/vs with *.map, the legacy vs/language/** tree, vs/nls/lang/** localisation bundles and non-kept basic-language chunks removed; Monaco is MIT, see LICENSE and ThirdPartyNotices.txt beside this file"
+}
