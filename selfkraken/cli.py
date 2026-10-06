@@ -867,8 +867,45 @@ def gui(
         "--theme",
         help="GUI colour theme: auto (follow the system), dark or light.",
     ),
+    skip_checks: bool = typer.Option(
+        False,
+        "--skip-checks",
+        help="Skip the pre-launch display checks and the Qt launch probe "
+        "(not recommended: without them a missing libxcb-cursor0 aborts Qt with a core dump).",
+    ),
 ) -> None:
-    """Open the native Qt desktop window (requires the optional gui extra)."""
+    """Open the native Qt desktop window (requires the optional gui extra).
+
+    Qt is imported only once the environment is known to be startable:
+    ``selfkraken.gui.preflight`` (pure stdlib) checks the display session and
+    the system library the xcb plugin needs, then a throwaway subprocess
+    probes that a QApplication really comes up.  Any problem prints the fix
+    and exits 1 — a platform plugin that cannot load would otherwise abort
+    this very process with a core dump.
+    """
+    try:
+        from selfkraken.gui import preflight as gui_preflight
+    except ImportError:  # pragma: no cover - stdlib-only; needs a broken install
+        _error(
+            escape(
+                "the desktop GUI needs PySide6 — install with: "
+                "pip install 'selfkraken[gui]'"
+            )
+        )
+        raise typer.Exit(EXIT_FAILED)
+
+    if not skip_checks:
+        problems = gui_preflight.preflight()
+        if problems:
+            for problem in problems:
+                _error(problem)
+            raise typer.Exit(EXIT_FAILED)
+        probe_problems = gui_preflight.launch_probe()
+        if probe_problems:
+            for line in probe_problems:
+                _error(line)
+            raise typer.Exit(EXIT_FAILED)
+
     try:
         from selfkraken.gui.app import run
     except ImportError:

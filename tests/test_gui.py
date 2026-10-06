@@ -3,7 +3,9 @@
 No pytest-qt: one plain QApplication fixture, ``QT_QPA_PLATFORM=offscreen``
 and a temp ``SK_DATA_DIR`` per test.  ``MainWindow(run_jobs_inline=True)``
 makes every background job synchronous, so the full loop is testable without
-event-loop timing.
+event-loop timing.  The GUI *preflight* and *launch probe* tests (the checks
+``skraken gui`` runs before Qt is imported — see ``selfkraken.gui.preflight``)
+monkeypatch the environment instead and never touch Qt at all.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -28,6 +31,7 @@ from selfkraken.config import Settings, load_settings  # noqa: E402
 from selfkraken.db import Store  # noqa: E402
 from selfkraken.graph import layout, list_branches, read_commits  # noqa: E402
 
+from selfkraken.gui import preflight as gui_preflight  # noqa: E402
 from selfkraken.gui.diff_view import DiffHighlighter  # noqa: E402
 from selfkraken.gui.models import GraphTableModel  # noqa: E402
 from selfkraken.gui.theme import DARK, LIGHT, resolve  # noqa: E402
@@ -341,13 +345,291 @@ def test_failed_tests_rollback_is_reported(window, git_repo, make_patch, sources
 
 
 # --------------------------------------------------------------------------- #
-# `skraken gui` without PySide6
+# GUI preflight: the checks that run before Qt is imported (pure stdlib)
 # --------------------------------------------------------------------------- #
+LINUX = sys.platform.startswith("linux")
+linux_only = pytest.mark.skipif(not LINUX, reason="xcb-cursor/wayland checks are Linux-only")
+
+
+def _qt_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    platform: Optional[str] = None,
+    display: Optional[str] = ":1",
+    wayland: Optional[str] = None,
+) -> None:
+    """Pin the three display variables; restores the host's values exactly.
+
+    The first ``setenv`` registers the original for monkeypatch even when the
+    variable does not exist, which also captures ``QT_QPA_PLATFORM`` when
+    ``preflight()`` itself sets it (the Wayland branch).
+    """
+    for name, value in (
+        ("QT_QPA_PLATFORM", platform),
+        ("DISPLAY", display),
+        ("WAYLAND_DISPLAY", wayland),
+    ):
+        monkeypatch.setenv(name, "")
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+def _cursor_library(monkeypatch: pytest.MonkeyPatch, *, present: bool) -> None:
+    """Pin the libxcb-cursor probe so the host's libraries never matter."""
+    if present:
+        monkeypatch.setattr(
+            gui_preflight.ctypes.util, "find_library", lambda name: gui_preflight.XCB_CURSOR_LIBRARY
+        )
+        monkeypatch.setattr(gui_preflight.ctypes, "CDLL", lambda *a, **k: object())
+    else:
+        monkeypatch.setattr(gui_preflight.ctypes.util, "find_library", lambda name: None)
+
+        def _missing(*_a: object, **_k: object) -> None:
+            raise OSError(f"{gui_preflight.XCB_CURSOR_LIBRARY}: cannot open shared object file")
+
+        monkeypatch.setattr(gui_preflight.ctypes, "CDLL", _missing)
+
+
+@linux_only
+@pytest.mark.parametrize("platform", [None, "xcb", "xcb:caca"])
+def test_preflight_missing_xcb_cursor_reports_install_hint(monkeypatch, platform) -> None:
+    _qt_env(monkeypatch, platform=platform)
+    _cursor_library(monkeypatch, present=False)
+    problems = gui_preflight.preflight()
+    assert len(problems) == 1
+    hint = problems[0]
+    assert "Qt needs the system library libxcb-cursor0" in hint
+    assert "sudo apt install libxcb-cursor0 (Debian/Ubuntu)" in hint
+    assert "sudo dnf install xcb-util-cursor (Fedora)" in hint
+    assert "sudo pacman -S xcb-util-cursor (Arch)" in hint
+
+
+@linux_only
+def test_preflight_without_display_reports_no_graphical_display(monkeypatch) -> None:
+    _qt_env(monkeypatch, display=None)
+    _cursor_library(monkeypatch, present=True)
+    problems = gui_preflight.preflight()
+    assert len(problems) == 1
+    assert "no graphical display" in problems[0]
+    assert "DISPLAY" in problems[0]
+    assert "desktop session" in problems[0]
+
+
+@linux_only
+def test_preflight_reports_both_problems(monkeypatch) -> None:
+    _qt_env(monkeypatch, display=None)
+    _cursor_library(monkeypatch, present=False)
+    problems = gui_preflight.preflight()
+    assert len(problems) == 2
+    assert any("no graphical display" in p for p in problems)
+    assert any("libxcb-cursor0" in p for p in problems)
+
+
+@linux_only
+def test_preflight_wayland_session_prefers_wayland(monkeypatch) -> None:
+    _qt_env(monkeypatch, display=None, wayland="wayland-0")
+    _cursor_library(monkeypatch, present=False)  # must not even be consulted
+    assert gui_preflight.preflight() == []
+    # set before QApplication would exist — Qt honours it at startup
+    assert os.environ["QT_QPA_PLATFORM"] == "wayland;xcb"
+
+
+@linux_only
+def test_preflight_explicit_platform_is_never_overridden(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="wayland", display=None, wayland="wayland-0")
+    _cursor_library(monkeypatch, present=False)
+    assert gui_preflight.preflight() == []
+    assert os.environ["QT_QPA_PLATFORM"] == "wayland"
+
+
+@linux_only
+def test_preflight_offscreen_platform_needs_nothing(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="offscreen", display=None)
+    _cursor_library(monkeypatch, present=False)  # missing lib + no display: irrelevant
+    assert gui_preflight.preflight() == []
+
+
+@linux_only
+def test_preflight_ok_with_xcb_and_loadable_library(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="xcb")
+    _cursor_library(monkeypatch, present=True)
+    assert gui_preflight.preflight() == []
+
+
+def test_preflight_reports_nothing_off_linux(monkeypatch) -> None:
+    _cursor_library(monkeypatch, present=False)
+    monkeypatch.setattr(gui_preflight.sys, "platform", "win32")
+    assert gui_preflight.preflight() == []
+    monkeypatch.setattr(gui_preflight.sys, "platform", "darwin")
+    assert gui_preflight.preflight() == []
+
+
+# --------------------------------------------------------------------------- #
+# launch probe: a subprocess takes the core dump, the CLI prints the fix
+# --------------------------------------------------------------------------- #
+def test_launch_probe_skipped_when_offscreen(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="offscreen")
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("the probe must not spawn Qt when offscreen")
+
+    monkeypatch.setattr(gui_preflight.subprocess, "run", _boom)
+    assert gui_preflight.launch_probe() is None
+
+
+def test_launch_probe_success_returns_none(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="xcb")
+
+    class _Ok:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(gui_preflight.subprocess, "run", lambda *a, **k: _Ok())
+    assert gui_preflight.launch_probe() is None
+
+
+def test_launch_probe_abort_headlines_and_collects_qt_qpa_lines(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="xcb")
+
+    class _Aborted:
+        returncode = -6  # SIGABRT: Qt's "Aborted (core dumped)"
+        stdout = ""
+        stderr = "\n".join(
+            [f"qt.qpa.plugin: synthetic complaint {i}" for i in range(7)]
+            + ["some other error noise"]
+        )
+
+    monkeypatch.setattr(gui_preflight.subprocess, "run", lambda *a, **k: _Aborted())
+    lines = gui_preflight.launch_probe()
+    assert lines is not None
+    assert lines[0].startswith("Qt could not start a window on this display")
+    assert "SIGABRT" in lines[0]
+    qpa = [line for line in lines if line.startswith("qt.qpa")]
+    assert len(qpa) == gui_preflight.PROBE_QT_LINES_MAX == 5  # capped, noise dropped
+    assert "some other error noise" not in "\n".join(lines)
+    assert gui_preflight.XCB_CURSOR_HINT in lines
+
+
+def test_launch_probe_timeout_is_reported(monkeypatch) -> None:
+    _qt_env(monkeypatch, platform="xcb")
+
+    def _hang(*_a: object, **_k: object) -> None:
+        raise subprocess.TimeoutExpired(cmd=["python", "-c", "..."], timeout=1)
+
+    monkeypatch.setattr(gui_preflight.subprocess, "run", _hang)
+    lines = gui_preflight.launch_probe(timeout_seconds=1)
+    assert lines is not None
+    assert lines[0].startswith("Qt could not start a window on this display")
+    assert "launch probe" in lines[0]
+
+
+# --------------------------------------------------------------------------- #
+# `skraken gui` — checks first, Qt only when the environment is startable
+# --------------------------------------------------------------------------- #
+def test_cli_gui_exits_1_with_hint_when_preflight_reports_problems(
+    runner, cli_env, monkeypatch
+) -> None:
+    from selfkraken.cli import app
+
+    monkeypatch.setattr(gui_preflight, "preflight", lambda: [gui_preflight.XCB_CURSOR_HINT])
+    # Simulate the bug machine: importing Qt widgets aborts the process here,
+    # so reaching that import at all would be a core dump, not a test failure.
+    monkeypatch.setitem(sys.modules, "selfkraken.gui.app", None)
+    result = runner.invoke(app, ["gui"])
+    assert result.exit_code == 1
+    assert "Error:" in result.output
+    assert "libxcb-cursor0" in result.output
+    assert "sudo apt install libxcb-cursor0" in result.output
+    assert "PySide6" not in result.output  # never reached the Qt import path
+
+
+def test_cli_gui_exits_1_when_launch_probe_fails(runner, cli_env, monkeypatch) -> None:
+    from selfkraken.cli import app
+
+    monkeypatch.setattr(gui_preflight, "preflight", lambda: [])
+    monkeypatch.setattr(
+        gui_preflight,
+        "launch_probe",
+        lambda timeout_seconds=15: [
+            "Qt could not start a window on this display: the Qt launch probe "
+            "was killed by SIGABRT — Qt aborts (core dumped) when its platform "
+            "plugin cannot load",
+            'qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" '
+            "even though it was found.",
+            gui_preflight.XCB_CURSOR_HINT,
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "selfkraken.gui.app", None)
+    result = runner.invoke(app, ["gui"])
+    assert result.exit_code == 1
+    assert "Error:" in result.output
+    assert "Qt could not start a window on this display" in result.output
+    assert "qt.qpa.plugin" in result.output
+    assert "libxcb-cursor0" in result.output
+
+
+def test_cli_gui_skip_checks_bypasses_the_checks(runner, cli_env, monkeypatch) -> None:
+    from selfkraken.cli import app
+    import selfkraken.gui.app as gui_app
+
+    calls: list[str] = []
+
+    def _preflight() -> list[str]:
+        calls.append("preflight")
+        return ["problem that --skip-checks must bypass"]
+
+    def _probe(timeout_seconds: int = 15) -> Optional[list[str]]:
+        calls.append("probe")
+        return ["problem that --skip-checks must bypass"]
+
+    monkeypatch.setattr(gui_preflight, "preflight", _preflight)
+    monkeypatch.setattr(gui_preflight, "launch_probe", _probe)
+    monkeypatch.setattr(gui_app, "run", lambda theme="auto", argv=None: 0)
+
+    result = runner.invoke(app, ["gui", "--skip-checks"])
+    assert result.exit_code == 0
+    assert calls == []  # neither check ran
+    assert "must be bypassed" not in result.output
+
+
+def test_cli_gui_runs_checks_in_order_before_the_window(
+    runner, cli_env, monkeypatch
+) -> None:
+    from selfkraken.cli import app
+    import selfkraken.gui.app as gui_app
+
+    calls: list[str] = []
+
+    def _preflight() -> list[str]:
+        calls.append("preflight")
+        return []
+
+    def _probe(timeout_seconds: int = 15) -> None:
+        calls.append("probe")
+        return None
+
+    def _run(theme: str = "auto", argv=None) -> int:
+        calls.append("run")
+        return 0
+
+    monkeypatch.setattr(gui_preflight, "preflight", _preflight)
+    monkeypatch.setattr(gui_preflight, "launch_probe", _probe)
+    monkeypatch.setattr(gui_app, "run", _run)
+
+    result = runner.invoke(app, ["gui"])
+    assert result.exit_code == 0
+    assert calls == ["preflight", "probe", "run"]  # Qt started only after both checks
+
+
 def test_cli_gui_without_pyside6_prints_friendly_error(
     runner, cli_env, monkeypatch
 ) -> None:
     from selfkraken.cli import app
 
+    _qt_env(monkeypatch, platform="offscreen")  # checks pass on any host
     # Simulate a core-only install: importing the GUI module raises ImportError.
     monkeypatch.setitem(sys.modules, "selfkraken.gui.app", None)
     result = runner.invoke(app, ["gui"])

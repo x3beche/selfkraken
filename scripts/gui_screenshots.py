@@ -24,6 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _datadir_guard import refuse_real_data_dir  # noqa: E402
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -70,6 +73,10 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    # never read from (or hand anything that could write to) the real user data
+    if os.environ.get("SK_DATA_DIR"):
+        refuse_real_data_dir(os.environ["SK_DATA_DIR"], "the SK_DATA_DIR you exported")
+
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
@@ -77,6 +84,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="selfkraken-guishots-") as tmp:
         work = Path(tmp)
         os.environ["SK_DATA_DIR"] = str(work / "data")
+        refuse_real_data_dir(work / "data", "the screenshot data dir (check TMPDIR)")
         for variable in ("SK_LLM_BASE_URL", "SK_LLM_API_KEY", "SK_LLM_MODEL"):
             os.environ.pop(variable, None)
         # commits made through the GUI must never use a personal git identity

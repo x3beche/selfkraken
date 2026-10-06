@@ -24,10 +24,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rich.console import Console  # noqa: E402
 from rich.text import Text  # noqa: E402
 
+from _datadir_guard import refuse_real_data_dir  # noqa: E402
 from fixtures_git import make_multibranch_repo  # noqa: E402
 from selfkraken.graph import _git  # noqa: E402
 from selfkraken.views import render_branches, render_file_tree, render_graph  # noqa: E402
@@ -99,6 +101,8 @@ def run_cli_demo(repo: Path, out: Path, work: Path, patch_file: Path) -> list[Pa
     written: list[Path] = []
     data_dir = work / "sk-data"
     data_dir.mkdir(parents=True, exist_ok=True)
+    # belt and braces: a TMPDIR inside the user data dir must never be used
+    refuse_real_data_dir(data_dir, "the demo data dir (check TMPDIR)")
 
     env = {
         key: value
@@ -169,6 +173,10 @@ def main() -> int:
     parser.add_argument("--out", default="docs/screenshots", help="output directory")
     args = parser.parse_args()
     out = Path(args.out)
+
+    # never read from (or hand anything that could write to) the real user data
+    if os.environ.get("SK_DATA_DIR"):
+        refuse_real_data_dir(os.environ["SK_DATA_DIR"], "the SK_DATA_DIR you exported")
 
     with tempfile.TemporaryDirectory(prefix="selfkraken-shots-") as tmp:
         work = Path(tmp)

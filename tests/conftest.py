@@ -73,6 +73,24 @@ def test_command() -> str:
     return TEST_COMMAND
 
 
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Never touch the user's real data dir: every test gets its own throwaway.
+
+    A probe run once polluted ``~/.local/share/selfkraken`` because a path
+    without ``SK_DATA_DIR`` fell back to the default.  Pinning both
+    ``SK_DATA_DIR`` and ``XDG_DATA_HOME`` to this test's ``tmp_path`` means
+    even that fallback lands in the temp dir — for Settings built straight
+    from ``os.environ`` and for ``skraken`` subprocesses (which inherit it)
+    alike.
+    """
+    monkeypatch.setenv("SK_DATA_DIR", str(tmp_path / "sk-data"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    yield
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     """Settings with the data dir (and therefore the DB) inside ``tmp_path``."""

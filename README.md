@@ -140,7 +140,7 @@ printed, logged, or stored in the database.
 | `skraken log [--limit N]` | Audit log: every register/index/propose/apply/test/rollback/commit/reject/revert |
 | `skraken export FILE` / `import FILE` | JSON portability (index not included; rebuild with `index`) |
 | `skraken sample load` / `sample remove` | Labelled demo repo and proposal |
-| `skraken gui [--theme auto\|dark\|light]` | Open the native Qt desktop window (needs the `gui` extra — see *Desktop GUI (Qt)*) |
+| `skraken gui [--theme auto\|dark\|light] [--skip-checks]` | Open the native Qt desktop window (needs the `gui` extra + one system library — see *Desktop GUI (Qt)*) |
 | `skraken doctor` | Environment check: data path, DB, git, model mode |
 
 Repo commands accept `--repo PATH` (default: the current directory, resolved to
@@ -242,6 +242,36 @@ Light theme:
 
 Regenerate the screenshots anytime with
 `.venv/bin/python scripts/gui_screenshots.py` (offscreen Qt, throwaway data).
+
+### System requirements for the GUI
+
+One thing `pip` cannot install: from Qt 6.5 on, the xcb (X11) platform plugin
+needs the **system** library `libxcb-cursor0`. Without it the window never
+opens — Qt aborts the process with a core dump:
+
+```
+qt.qpa.plugin: From 6.5.0, xcb-cursor0 or libxcb-cursor0 is needed to load the Qt xcb platform plugin.
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+Aborted (core dumped)
+```
+
+`skraken gui` now checks the environment **before** importing Qt and prints
+the fix instead of crashing: it refuses to start when no display is available
+(tell you to run it from a desktop session), when `libxcb-cursor0` cannot be
+loaded, and — as a back-stop for anything the checks cannot see — a throwaway
+subprocess first proves a `QApplication` really comes up on your display.
+Install the library once per machine:
+
+```bash
+sudo apt install libxcb-cursor0     # Debian / Ubuntu
+sudo dnf install xcb-util-cursor    # Fedora
+sudo pacman -S xcb-util-cursor      # Arch
+```
+
+On a Wayland session Qt is automatically told to prefer the Wayland plugin;
+`--skip-checks` bypasses the guards if you know better than they do. The
+**CLI needs none of this**: every `skraken` command except `gui` works
+headless with no system packages, and the test suite runs Qt offscreen.
 
 ### Keyboard shortcuts
 
