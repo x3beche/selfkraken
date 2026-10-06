@@ -192,6 +192,10 @@ def stable_git_and_test_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:cacheprovider")
+    # rich must render at a fixed width regardless of the terminal pytest
+    # itself was launched from (``COLUMNS=80 pytest`` == bare ``pytest``).
+    monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.setenv("COLUMNS", "200")
 
 
 @pytest.fixture
@@ -653,7 +657,10 @@ def test_graph_current_only_on_an_unmerged_branch(
     only_current = runner.invoke(app, ["graph", "--current-only", "--ascii", "--repo", str(repo)])
     assert only_current.exit_code == 0, only_current.output
     assert "Draft cache layer" in only_current.output
-    assert "[experiment/cache]" in only_current.output
+    # The fixture pushes experiment/cache to origin (push --all), so views
+    # collapse the equal local/remote refs into one full label — asserted in
+    # full so any width-driven truncation with an ellipsis fails the test.
+    assert "[experiment/cache <-> origin]" in only_current.output
     # main moved on after this branch was cut: none of that is the branch's history
     assert "Bump release metadata" not in only_current.output
     assert main_tip not in only_current.output

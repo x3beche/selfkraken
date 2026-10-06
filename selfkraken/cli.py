@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import typer
 from rich import box
-from rich.console import Console
+from rich.console import Console, ConsoleDimensions
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
@@ -35,9 +35,83 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_INVALID = 2
 
+#: Width used when stdout is not a terminal and the user did not set
+#: ``COLUMNS``: wide enough that tables, graph rows and ref labels are never
+#: cut off with an ellipsis in piped or captured output.
+PIPED_WIDTH = 200
+
+
+class _AutoWidthConsole(Console):
+    """Console that decides its size at render time, not at import time.
+
+    ``rich`` reads ``COLUMNS`` when a ``Console`` is *constructed*, which
+    bakes whatever width the process happened to start with into every later
+    render — so ``skraken graph --ascii | grep ...`` and pytest's captured
+    output were still truncated (and test results depended on the developer's
+    terminal).  Instead we resolve the size on every call:
+
+    * an explicit ``COLUMNS`` in the environment always wins (unchanged);
+    * a real TTY gets its terminal's live size (unchanged);
+    * anything else — pipes, redirection, captured test output — renders
+      ``PIPED_WIDTH`` columns wide, so nothing is cut off.
+
+    ``NO_COLOR`` and colour detection are untouched: they are resolved by
+    ``Console`` from the live environment.  A width/height passed explicitly
+    to the constructor is still honoured.
+    """
+
+    def __init__(self, *args: Any, width: Optional[int] = None,
+                 height: Optional[int] = None, **kwargs: Any) -> None:
+        super().__init__(*args, width=width, height=height, **kwargs)
+        # Undo rich's import-time capture of COLUMNS/LINES: what matters is
+        # the environment at render time, not when this module was imported.
+        if width is None:
+            self._width = None
+        if height is None:
+            self._height = None
+
+    @property
+    def size(self) -> ConsoleDimensions:
+        if self._width is not None and self._height is not None:
+            return ConsoleDimensions(self._width, self._height)
+
+        if self.is_dumb_terminal:
+            return ConsoleDimensions(80, 25)
+
+        width: Optional[int] = None
+        height: Optional[int] = None
+
+        # Ask the *actual output stream* — unlike a fixed fd scan, a redirected
+        # stdout of a process that still has a TTY on stdin is correctly seen
+        # as "not a terminal".
+        try:
+            width, height = os.get_terminal_size(self.file.fileno())
+        except (AttributeError, ValueError, OSError):  # not a terminal
+            pass
+
+        columns = self._environ.get("COLUMNS")
+        if columns is not None and columns.isdigit():
+            width = int(columns)
+        lines = self._environ.get("LINES")
+        if lines is not None and lines.isdigit():
+            height = int(lines)
+
+        if width is None:
+            # No explicit COLUMNS and no usable terminal size: wide output
+            # when piped/captured, rich's default 80 on a real terminal.
+            width = 80 if self.is_terminal else PIPED_WIDTH
+        if height is None:
+            height = 25
+
+        return ConsoleDimensions(
+            (width - self.legacy_windows) if self._width is None else self._width,
+            height if self._height is None else self._height,
+        )
+
+
 #: ``Console`` resolves ``sys.stdout`` lazily, so one shared instance is fine and
 #: keeps ``NO_COLOR`` / piping / test capture working.
-console = Console(highlight=False)
+console = _AutoWidthConsole(highlight=False)
 
 GRAPH_LIMIT_MAX = 2000
 LOG_LIMIT_MAX = 1000
