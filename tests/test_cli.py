@@ -12,6 +12,7 @@ import pytest
 
 from selfkraken import gitops
 from selfkraken.cli import app
+from selfkraken.db import Store
 from typer.testing import CliRunner
 
 SECRET = "sk-super-secret-value-123"
@@ -500,6 +501,96 @@ def test_sample_subtyper_load_and_remove(runner: CliRunner, cli_env: Path) -> No
     removed = runner.invoke(app, ["sample", "remove"])
     assert removed.exit_code == 0, removed.output
     assert "OK" in removed.output
+
+
+# --------------------------------------------------------------------------- #
+# sample data: kinds
+# --------------------------------------------------------------------------- #
+def test_sample_load_defaults_to_the_calculator(runner: CliRunner, cli_env: Path) -> None:
+    loaded = runner.invoke(app, ["sample", "load"])
+    assert loaded.exit_code == 0, loaded.output
+    assert (cli_env / "sample-repo").is_dir()
+    assert not (cli_env / "sample-multibranch").exists()
+
+    listed = runner.invoke(app, ["repos"])
+    assert "[SAMPLE] calculator" in listed.output
+
+
+def test_sample_load_multibranch_builds_the_demo_inside_the_data_dir(
+    runner: CliRunner, cli_env: Path
+) -> None:
+    loaded = runner.invoke(app, ["sample", "load", "--kind", "multibranch"])
+    assert loaded.exit_code == 0, loaded.output
+    assert "OK" in loaded.output
+
+    repo_dir = cli_env / "sample-multibranch"
+    origin_dir = cli_env / "sample-multibranch-origin.git"
+    assert (repo_dir / ".git").is_dir()
+    assert origin_dir.is_dir(), "the fake remote belongs to the data dir, not the caller's"
+    assert not (cli_env / "origin.git").exists()
+    assert str(repo_dir) in loaded.output
+
+    listed = runner.invoke(app, ["repos"])
+    assert "[SAMPLE] multibranch demo" in listed.output
+
+    # the demo really is a multi-branch repo, and it was indexed while loading
+    branches = runner.invoke(app, ["branches", "--repo", str(repo_dir)])
+    assert branches.exit_code == 0, branches.output
+    for name in ("main", "feature/login", "feature/export", "release/0.2", "origin/main"):
+        assert name in branches.output, branches.output
+    assert "+2" in branches.output and "-1" in branches.output, "main shows ahead and behind"
+
+    graph = runner.invoke(app, ["graph", "--repo", str(repo_dir), "--ascii"])
+    assert graph.exit_code == 0, graph.output
+    assert "merge" in graph.output.lower()
+    assert "v0.1.0" in graph.output and "experiment/cache" in graph.output
+
+    search = runner.invoke(app, ["search", "compute", "--repo", str(repo_dir)])
+    assert search.exit_code == 0, search.output
+    assert "core.py" in search.output
+
+    proposals = runner.invoke(app, ["proposals", "--repo", str(repo_dir)])
+    assert proposals.exit_code == 0, proposals.output
+    assert "[SAMPLE]" in proposals.output
+
+    removed = runner.invoke(app, ["sample", "remove"])
+    assert removed.exit_code == 0, removed.output
+    assert "OK" in removed.output
+    assert not repo_dir.exists() and not origin_dir.exists()
+
+
+def test_sample_load_multibranch_is_idempotent(runner: CliRunner, cli_env: Path) -> None:
+    first = runner.invoke(app, ["sample", "load", "--kind", "multibranch"])
+    second = runner.invoke(app, ["sample", "load", "--kind", "multibranch"])
+    assert first.exit_code == 0 and second.exit_code == 0, second.output
+    assert second.output.splitlines()[0] == first.output.splitlines()[0]
+
+    listed = runner.invoke(app, ["repos"])
+    assert listed.output.count("[SAMPLE] multibranch demo") == 1
+
+
+def test_sample_load_rejects_an_unknown_kind(runner: CliRunner, cli_env: Path) -> None:
+    result = runner.invoke(app, ["sample", "load", "--kind", "octopus"])
+    assert result.exit_code == 2
+    assert "Error:" in result.output
+    assert "calculator" in result.output and "multibranch" in result.output
+    assert not list(cli_env.glob("sample-*"))
+
+
+def test_sample_remove_takes_both_demos_with_one_command(
+    runner: CliRunner, cli_env: Path
+) -> None:
+    assert runner.invoke(app, ["sample", "load"]).exit_code == 0
+    assert runner.invoke(app, ["sample", "load", "--kind", "multibranch"]).exit_code == 0
+
+    removed = runner.invoke(app, ["sample", "remove"])
+    assert removed.exit_code == 0, removed.output
+    for name in ("sample-repo", "sample-multibranch", "sample-multibranch-origin.git"):
+        assert not (cli_env / name).exists(), name
+
+    with Store(cli_env / "selfkraken.db") as store:
+        assert store.list_repos() == []
+        assert store.list_proposals() == []
 
 
 def test_visualisation_commands_need_a_registered_repo(

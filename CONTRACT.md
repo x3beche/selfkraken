@@ -33,7 +33,7 @@ Already present (do not rewrite): `pyproject.toml`, `selfkraken/__init__.py`, `s
 
 | Var | Default | Meaning |
 |---|---|---|
-| `SK_DATA_DIR` | `$XDG_DATA_HOME/selfkraken` or `~/.local/share/selfkraken` | where `selfkraken.db` and sample repo live |
+| `SK_DATA_DIR` | `$XDG_DATA_HOME/selfkraken` or `~/.local/share/selfkraken` | where `selfkraken.db` and the `[SAMPLE]` demo repos (and the demo's bare remote) live |
 | `SK_LLM_BASE_URL` | unset | OpenAI-compatible base URL, e.g. `http://localhost:11434/v1` (Ollama) |
 | `SK_LLM_API_KEY` | unset | optional bearer token (secret) |
 | `SK_LLM_MODEL` | unset | model name |
@@ -148,7 +148,12 @@ Records a `import`/`export` change.
 ```python
 SAMPLE_LABEL = "[SAMPLE]"
 def load_sample(store: Store, settings: Settings) -> Repo
+def load_multibranch_sample(store: Store, settings: Settings) -> Repo
 def remove_sample(store: Store, settings: Settings) -> int
+def sample_repo_dir(settings: Settings) -> Path            # <data_dir>/sample-repo
+def multibranch_repo_dir(settings: Settings) -> Path       # <data_dir>/sample-multibranch
+def multibranch_origin_dir(settings: Settings) -> Path     # <data_dir>/sample-multibranch-origin.git
+def _build_multibranch(repo: Path, origin: Path) -> None   # the shipped demo builder
 ```
 `load_sample` creates a git repo at `settings.data_dir / "sample-repo"` (use `subprocess` + `git` directly, set
 `-c user.name=selfkraken-sample -c user.email=sample@localhost`), containing `calc.py` (add/sub/mul/div functions,
@@ -156,7 +161,27 @@ def remove_sample(store: Store, settings: Settings) -> int
 `python -m pytest -q`), commits it, registers it with name `"[SAMPLE] calculator"`, test_command
 `"python -m pytest -q"`, is_sample=True, and creates one sample proposal (request `"[SAMPLE] Raise ValueError on
 division by zero"`, model `"sample"`, a real valid unified diff against calc.py, is_sample=True). Idempotent:
-if already loaded, return the existing repo. `remove_sample` deletes sample DB rows and the directory.
+if already loaded, return the existing repo.
+
+`load_multibranch_sample` builds the richer demo the app ships with, at
+`settings.data_dir / "sample-multibranch"`, with its fake bare remote at
+`settings.data_dir / "sample-multibranch-origin.git"` — every path it writes is inside the data directory, and it
+never creates a generic `origin.git` next to the repository (that littered whatever folder a demo was built in).
+`_build_multibranch(repo, origin)` scripts real `git` calls with the same sample identity and **fixed,
+incrementing dates**, so the history is byte-for-byte reproducible; the demo is a small python project
+(`src/app/` modules + `tests/`, plain asserts, runnable with `python -m pytest -q`, green on `main`) with ~30
+commits over `main`, `feature/login`, `feature/search`, `feature/export`, `hotfix/div-zero`, `release/0.2` and an
+unmerged `experiment/cache`; `--no-ff` merges (one of them `main` folded back into a feature), annotated tags
+`v0.1.0` and `v0.2.0`, and a `main` that is 2 ahead / 1 behind `origin/main` so `branches` shows real divergence.
+The command registers the repo as `"[SAMPLE] multibranch demo"` (same test command, `is_sample=True`), indexes it,
+adds one `[SAMPLE]` proposal holding a real valid diff (two files, applies with `git apply` and keeps the demo's
+tests green), and is idempotent — an existing demo directory is never rebuilt and existing user edits are kept; a
+deleted one is rebuilt (the leftover bare remote is wiped and rebuilt too, since the marker file proves it is ours).
+
+`remove_sample` deletes the sample DB rows *and* all three directories (`sample-repo`, `sample-multibranch`,
+`sample-multibranch-origin.git`), but only after the name/inside-the-data-dir check and the
+`.selfkraken-sample` marker check: an unmarked directory of that name, or a file in its place, is refused with
+`ValidationError` and left untouched.
 
 ## Git + diffs (`selfkraken/gitops.py`, `selfkraken/diffs.py`, owner B)
 ```python
@@ -258,7 +283,8 @@ Global option `--repo PATH` on repo commands (default cwd). Commands:
 `init [PATH] --test-cmd TEXT --name TEXT` · `repos` · `set-test CMD` · `index` · `search QUERY` ·
 `propose REQUEST [--diff-file FILE] [--file PATH ...] [--yes]` · `proposals [--status S]` · `show ID` ·
 `apply ID [--no-test] [--commit] [--keep-on-failure] [--yes]` · `reject ID` · `revert ID` · `test` ·
-`log [--limit N]` · `export FILE` · `import FILE` · `sample load|remove` · `doctor`.
+`log [--limit N]` · `export FILE` · `import FILE` · `sample load [--kind calculator|multibranch]` ·
+`sample remove` · `doctor`.
 UX states (every command): **empty** (e.g. "No proposals yet — try: skraken propose \"...\""), **loading**
 (`rich` status spinner when stdout is a TTY, e.g. "Asking model…", "Running tests…"), **validation** (exit 2,
 `Error:` prefix, which input and why), **success** (`OK` text label + green), **failure** (`FAILED`/`Error:` text

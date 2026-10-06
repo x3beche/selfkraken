@@ -39,7 +39,8 @@ scripts/install.sh            # creates .venv (needs python3.12), installs, make
 Try the whole loop on labelled sample data (safe, removable):
 
 ```bash
-.venv/bin/skraken sample load          # a [SAMPLE] git repo + one sample proposal
+.venv/bin/skraken sample load                      # [SAMPLE] calculator demo
+.venv/bin/skraken sample load --kind multibranch   # [SAMPLE] multi-branch demo (~30 commits)
 ```
 
 On your own repo, the core loop is:
@@ -139,7 +140,7 @@ printed, logged, or stored in the database.
 | `skraken tree [--depth N] [--proposal ID]` | File tree (`--depth` bounds it); with `--proposal`, files that diff touches are marked `✎ changed` |
 | `skraken log [--limit N]` | Audit log: every register/index/propose/apply/test/rollback/commit/reject/revert |
 | `skraken export FILE` / `import FILE` | JSON portability (index not included; rebuild with `index`) |
-| `skraken sample load` / `sample remove` | Labelled demo repo and proposal |
+| `skraken sample load [--kind calculator\|multibranch]` / `sample remove` | Labelled demo repos and proposals inside the data dir (see *Sample data*) |
 | `skraken gui [--theme auto\|dark\|light] [--skip-checks]` | Open the native Qt desktop window (needs the `gui` extra + one system library — see *Desktop GUI (Qt)*) |
 | `skraken doctor` | Environment check: data path, DB, git, model mode |
 
@@ -154,8 +155,8 @@ the nearest registered repo).
   run `apply` / `revert`; `git add`/`commit` only if you pass `--commit`.
 - **Runs:** your configured test command, as your user, in the repo directory
   (`shlex`-split, no shell).
-- **Writes:** only to its data directory (SQLite DB, sample repo) and files you
-  explicitly name in `export`.
+- **Writes:** only to its data directory (SQLite DB, the `[SAMPLE]` demo repos
+  and their bare remote) and files you explicitly name in `export`.
 - **Network:** only to the configured `SK_LLM_BASE_URL`, plus whatever your own
   git remote does when you use git yourself — selfkraken never pushes/fetches.
 - It never sends telemetry anywhere. It is the only client.
@@ -191,9 +192,35 @@ so development data stays in the repo folder and is gitignored.
 
 ## Sample data
 
-`skraken sample load` creates a small git repo (`sample-repo` in the data
-dir) and one proposal, both labelled `[SAMPLE]`. Nothing of yours is touched.
-Remove everything with `skraken sample remove`.
+`skraken sample load` builds a labelled demo inside the data directory. Two
+kinds are bundled, both tagged `[SAMPLE]` and both removed by one
+`skraken sample remove`:
+
+```bash
+skraken sample load                   # calculator: 1 commit, 1 failing test, 1 fix proposal
+skraken sample load --kind multibranch  # richer demo: a real multi-branch project
+```
+
+The calculator demo is `sample-repo`: `calc.py` with `add/sub/mul/div` (`div`
+has no zero check) and `test_calc.py` whose suite goes green once you apply the
+bundled proposal.
+
+`--kind multibranch` builds `sample-multibranch` — a small python project
+(`src/app` modules, real `pytest` tests that pass on `main`) with ~30 commits:
+`main`, `feature/login`, `feature/search`, `feature/export`,
+`hotfix/div-zero`, `release/0.2` and an unmerged `experiment/cache`, joined by
+`--no-ff` merges (including one merge of `main` back into a feature) and tagged
+`v0.1.0` and `v0.2.0`. Its fake remote is the sibling
+`sample-multibranch-origin.git` **in the same data directory** — never a
+generic `origin.git` dropped next to wherever you ran the command — and `main`
+is 2 ahead / 1 behind it, so `skraken branches` shows real divergence. The
+demo is registered and indexed on the way in, and gets one `[SAMPLE]`
+proposal (a valid two-file patch that keeps the demo's tests green). Commit
+dates and author identity are fixed, so the graph looks the same on every
+machine. Loading again is a no-op (idempotent, and it never overwrites edits
+you made in the demo); `skraken sample remove` deletes both demos' rows and
+all three directories, and only after checking the `.selfkraken-sample`
+ownership marker inside the data directory.
 
 ## Desktop GUI (Qt)
 
