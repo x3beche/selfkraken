@@ -352,8 +352,14 @@ app = typer.Typer(
     add_completion=False,
 )
 
-sample_app = typer.Typer(help="Work with the bundled demo repository (never touches your own repos).")
+sample_app = typer.Typer(
+    help="Work with the bundled demo repositories (never touches your own repos)."
+)
 app.add_typer(sample_app, name="sample")
+
+#: What ``skraken sample load --kind`` accepts; ``calculator`` is the default
+#: and the historical behaviour, ``multibranch`` builds the richer demo.
+SAMPLE_KINDS: tuple[str, ...] = ("calculator", "multibranch")
 
 
 @app.command("init")
@@ -746,25 +752,55 @@ def _counts_line(counts: dict[str, int]) -> str:
 
 @sample_app.command("load")
 @_guarded
-def sample_load() -> None:
-    """Load the bundled sample repository (a real git repo under the data dir)."""
+def sample_load(
+    kind: str = typer.Option(
+        "calculator",
+        "--kind",
+        help=f"Which demo to load: {' or '.join(SAMPLE_KINDS)} (default: calculator).",
+        case_sensitive=False,
+    ),
+) -> None:
+    """Load a bundled [SAMPLE] demo repository (a real git repo under the data dir)."""
     settings = load_settings()
+    chosen = kind.strip().lower()
+    if chosen not in SAMPLE_KINDS:
+        raise ValidationError(f"--kind must be one of: {', '.join(SAMPLE_KINDS)} (got {kind!r})")
     with _store(settings) as store:
         with _status("Loading sample repository…"):
-            repo = sample.load_sample(store, settings)
+            if chosen == "multibranch":
+                repo = sample.load_multibranch_sample(store, settings)
+            else:
+                repo = sample.load_sample(store, settings)
         _ok(f"sample repo {repo.id} loaded at {repo.path} ({sample.SAMPLE_LABEL} labelled)")
-        _hint(f'skraken propose "raise an error on division by zero" --repo {repo.path}')
+        if chosen == "multibranch":
+            _note(f"bare remote: {sample.multibranch_origin_dir(settings)}")
+            _note("branches, merges, tags and a main that is ahead/behind origin/main")
+            _hint(f"skraken branches --repo {repo.path}")
+            _hint(f"skraken graph --repo {repo.path}")
+            _hint(f"skraken test --repo {repo.path}")
+        else:
+            _hint(f'skraken propose "raise an error on division by zero" --repo {repo.path}')
 
 
 @sample_app.command("remove")
 @_guarded
 def sample_remove() -> None:
-    """Remove the bundled sample repository and its rows."""
+    """Remove every bundled sample repository, its rows and its directories."""
     settings = load_settings()
+    expected = (
+        sample.sample_repo_dir(settings),
+        sample.multibranch_repo_dir(settings),
+        sample.multibranch_origin_dir(settings),
+    )
+    present = [path.name for path in expected if path.exists()]
     with _store(settings) as store:
         with _status("Removing sample repository…"):
             removed = sample.remove_sample(store, settings)
         _ok(f"sample data removed ({removed} row(s))")
+        if present:
+            _note("removed directories: " + ", ".join(present))
+        else:
+            _note("no sample directories were present")
 
 
 # --------------------------------------------------------------------------- #

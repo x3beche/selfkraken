@@ -4,6 +4,18 @@ Importable by pytest (`from fixtures_git import make_multibranch_repo`) and by
 scripts/screenshots.py. Every builder creates a real git repo with fixed,
 incrementing commit dates (GIT_AUTHOR_DATE/GIT_COMMITTER_DATE) and local
 user identity, so history shape and ordering are reproducible.
+
+The richer multi-branch demo that *ships* with the app lives in the package
+(``selfkraken.sample._build_multibranch``, reached by
+``skraken sample load --kind multibranch``).  This fixture deliberately keeps
+its own leaner shape: ``tests/test_graph.py``, ``tests/test_views.py``,
+``tests/test_gui.py`` and ``tests/test_multibranch_workflow.py`` pin its commit
+count, subjects, file contents and the ``Kraken Fixture`` identity, so it is not
+a thin wrapper around the shipped builder.
+
+Every builder puts its fake bare remote in an *explicit* location: never a
+generic ``origin.git`` next to the repository (that used to litter whatever
+folder a demo was built in), but ``<repo-name>-origin.git`` by default.
 """
 
 from __future__ import annotations
@@ -154,8 +166,12 @@ def divide(a: int, b: int) -> float:
 '''
 
 
-def make_multibranch_repo(path: Path) -> Path:
+def make_multibranch_repo(path: Path, origin_path: Path | None = None) -> Path:
     """Realistic multi-branch history: parallel features, merges, hotfix, tag.
+
+    ``origin_path`` is where the fake bare remote is created; the default is
+    ``<path>-origin.git`` (a sibling named after the repository, never a
+    generic ``origin.git`` that escapes the caller's directory).
 
     Shape (newest on top):
       main with scaffold + compute; feature/login (2 commits) and
@@ -226,7 +242,13 @@ def make_multibranch_repo(path: Path) -> Path:
     repo.tag("v0.1.0", "Release 0.1.0")
 
     # --- origin remote + tracking so list_branches sees ahead/behind ---------
-    bare = repo.path.parent / "origin.git"
+    # An explicit location, never a generic "<parent>/origin.git": building a
+    # demo into ~/Documents/Github/x used to litter ~/Documents/Github/origin.git.
+    if origin_path is None:
+        bare = Path(path).with_name(Path(path).name + "-origin.git")
+    else:
+        bare = Path(origin_path)
+    bare = bare.expanduser().resolve()
     _run(repo.path, repo._next(), "init", "--bare", "-b", "main", str(bare))
     _run(repo.path, repo._next(), "remote", "add", "origin", str(bare))
     _run(repo.path, repo._next(), "push", "--all", "origin")
