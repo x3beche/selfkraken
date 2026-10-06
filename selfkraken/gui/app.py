@@ -118,6 +118,7 @@ from selfkraken.gui.theme import (
     SECTION_HEADER_HEIGHT,
     SPLITTER_HIT,
     SPACE_12,
+    SPACE_2,
     SPACE_4,
     SPACE_6,
     SPACE_8,
@@ -1290,9 +1291,13 @@ class MainWindow(QMainWindow):
         )
         diff_pointer.setAccessibleName("Where the diff is shown")
 
-        option_row = QHBoxLayout()
-        option_row.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
-        option_row.setSpacing(SPACE_8)
+        # Two columns, not one row: three checkboxes side by side need ~336px,
+        # which is wider than the review dock at 1024px and clipped "Keep on
+        # failure" to "Keep on failur".  Two columns stay compact and always fit.
+        option_grid = QGridLayout()
+        option_grid.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
+        option_grid.setHorizontalSpacing(SPACE_8)
+        option_grid.setVerticalSpacing(SPACE_2)
         self.tests_check = QCheckBox("&Run tests")
         self.tests_check.setChecked(True)
         self.tests_check.setToolTip(
@@ -1307,10 +1312,13 @@ class MainWindow(QMainWindow):
             "Leave the change in the working tree even when tests fail "
             "(no automatic rollback)"
         )
-        for box in (self.tests_check, self.commit_check, self.keep_check):
+        for position, box in enumerate(
+            (self.tests_check, self.commit_check, self.keep_check)
+        ):
             box.setAccessibleName(box.text().replace("&", ""))
-            option_row.addWidget(box)
-        option_row.addStretch(1)
+            option_grid.addWidget(box, position // 2, position % 2)
+        option_grid.setColumnStretch(0, 1)
+        option_grid.setColumnStretch(1, 1)
 
         button_row = QHBoxLayout()
         button_row.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
@@ -1343,7 +1351,7 @@ class MainWindow(QMainWindow):
         detail_layout.addWidget(rationale_caption)
         detail_layout.addWidget(self.rationale_edit)
         detail_layout.addWidget(diff_pointer)
-        detail_layout.addLayout(option_row)
+        detail_layout.addLayout(option_grid)
         detail_layout.addLayout(button_row)
         # no stretch inside: with the diff next door this section is exactly as
         # tall as its own content, so no gap opens between meta and rationale
@@ -1714,29 +1722,43 @@ class MainWindow(QMainWindow):
     def _fit_log_dock(self, force: bool = False) -> None:
         """No dead band and no half row: the dock is exactly N whole rows tall.
 
-        The height is title + header + chrome + ``rows * row_height``, so the
-        last visible row always ends at the dock's edge — a capped pixel height
-        used to cut the bottom row in half.  Capped at ACTIVITY_LOG_HEIGHT by
-        dropping *whole* rows, floored at one row (then it scrolls), and left
-        alone once the user has dragged the splitter themselves.  ``force`` is
-        the one shot right after the window is mapped: before that the dock
-        reports its old height and a fit computed then never gets applied.
+        The overhead (dock title, frame, margins, the table's own header) is
+        **measured** from the widgets — ``dock.height() - viewport.height()`` is
+        every pixel that is not a log row — because the token-based estimate was
+        ~15px too generous and left the bottom row sliced in half.  With the real
+        overhead the height is always ``overhead + rows * row_height``, so the
+        last visible row ends exactly at the dock's edge; the cap drops *whole*
+        rows, never a few pixels of one, and the scrollbar steps by a row.
+
+        Left alone once the user has dragged the splitter themselves; ``force``
+        is the one shot right after the window is mapped, before which the dock
+        reports a height that was never laid out.
         """
-        row_height = self.log_table.verticalHeader().defaultSectionSize()
-        header = self.log_table.horizontalHeader().sizeHint().height()
-        chrome = header + 2 * MARGIN_PANEL + DOCK_TITLE_HEIGHT + SPLITTER_HIT
+        table = self.log_table
+        row_height = table.verticalHeader().defaultSectionSize()
+        if row_height <= 0:  # pragma: no cover - defensive
+            return
+        header = table.horizontalHeader().sizeHint().height()
+        dock_height = self.bottom_dock.height()
+        viewport_height = table.viewport().height()
+        if dock_height > 0 and viewport_height > 0 and dock_height > viewport_height:
+            overhead = dock_height - viewport_height
+        else:
+            # not laid out yet: start from the design tokens, the forced call
+            # after showEvent replaces this with the measured number
+            overhead = header + 2 * MARGIN_PANEL + DOCK_TITLE_HEIGHT + SPLITTER_HIT
         available = self.log_model.rowCount()
         # never taller than the log itself: three empty rows under a one-line log
         # is exactly the dead band this dock is supposed to avoid
         rows = min(max(available, 1), LOG_DOCK_MAX_ROWS)
-        height = chrome + rows * row_height
+        height = overhead + rows * row_height
         while rows > 1 and height > ACTIVITY_LOG_HEIGHT:
             rows -= 1  # give back a full row, never a few pixels of one
-            height = chrome + rows * row_height
-        height = max(height, chrome + row_height)
+            height = overhead + rows * row_height
+        height = max(height, overhead + row_height)
         untouched = (
             self._log_dock_height is None
-            or self.bottom_dock.height() in (self._log_dock_height, 0)
+            or dock_height in (self._log_dock_height, 0)
         )
         if force or untouched:
             self.resizeDocks([self.bottom_dock], [height], Qt.Orientation.Vertical)

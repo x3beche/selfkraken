@@ -188,6 +188,105 @@ def test_window_geometry_is_remembered_in_the_data_dir(
         second.close()
 
 
+def test_review_pane_children_never_overflow_their_dock(
+    qapp, gui_settings, no_dialogs, git_repo, make_patch, sources, test_command
+) -> None:
+    """Nothing in the review column may be wider than the dock that holds it.
+
+    The apply options once sat in one row needing more width than the dock had,
+    so "Keep on failure" painted as "Keep on failur" and the commit message box
+    ran under the border.  A dock that scrolls sideways is not a fix — the
+    content has to fit the dock it is given.
+    """
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from selfkraken.gui.app import MainWindow, apply_theme
+    from selfkraken.gui.theme import DARK
+
+    previous = qapp.styleSheet()
+    apply_theme(qapp, DARK)
+    window = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        window.add_repo(git_repo, test_command)
+        window.index_repo()
+        window.submit_proposal(
+            "Add a sub() function with a test",
+            diff_text=make_patch(
+                git_repo,
+                {
+                    "calc.py": sources["calc_with_sub"],
+                    "test_calc.py": sources["test_calc_with_sub"],
+                },
+            ),
+        )
+        window.graph_view.select_row(0)
+        window.tests_toggle.setExpanded(True)
+        for width in (1024, 1280):
+            window.resize(width, 700)
+            window.show()
+            QApplication.processEvents()
+            scroll = window.right_scroll
+            viewport_width = scroll.viewport().width()
+            inner = scroll.widget()
+            assert inner.width() <= viewport_width + 1, (
+                f"{width}px: review content is {inner.width()}px wide in a "
+                f"{viewport_width}px dock"
+            )
+            offenders = []
+            for child in inner.findChildren(QWidget):
+                if not child.isVisible() or child.height() <= 0:
+                    continue
+                right = child.mapTo(scroll, child.rect().topRight()).x()
+                if right > viewport_width + 1:
+                    offenders.append(
+                        f"{child.metaObject().className}#{child.objectName()} "
+                        f"right={right} > {viewport_width}"
+                    )
+            assert not offenders, (
+                f"{width}px: review children past the dock edge:\n  "
+                + "\n  ".join(offenders)
+            )
+    finally:
+        window.close()
+        qapp.setStyleSheet(previous)
+
+
+def test_activity_log_dock_snaps_to_whole_rows(qapp, gui_settings, no_dialogs) -> None:
+    """A long log never shows a half row: the viewport is a whole multiple of it.
+
+    The dock's non-row pixels (title, frame, margins, the table header) are not a
+    round number, so the height has to be measured and snapped, not estimated.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from selfkraken.gui.app import MainWindow
+
+    window = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        for index in range(12):  # more rows than the dock will ever show
+            window.store.record_change("index", f"synthetic log line {index}")
+        window.refresh_log()
+        window.resize(1280, 800)
+        window.show()
+        QApplication.processEvents()
+        window._fit_log_dock(force=True)
+        QApplication.processEvents()
+
+        table = window.log_table
+        row_height = table.verticalHeader().defaultSectionSize()
+        viewport_height = table.viewport().height()
+        assert window.log_model.rowCount() >= 8
+        assert viewport_height % row_height == 0, (
+            f"viewport {viewport_height}px is not whole rows of {row_height}px "
+            f"({viewport_height / row_height:.2f} rows — the last one is cut)"
+        )
+        last = table.rowAt(viewport_height - 1)
+        assert last >= 0
+        assert table.visualRect(table.model().index(last, 0)).bottom() <= viewport_height
+    finally:
+        window.close()
+
+
 def test_graph_column_is_never_narrower_than_its_header(qapp, git_repo) -> None:
     """One lane used to elide the "Graph" header to "ra|"."""
     from selfkraken.gui.graph_widget import GraphView, graph_column_minimum
