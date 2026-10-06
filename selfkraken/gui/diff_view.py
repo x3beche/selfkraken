@@ -14,7 +14,7 @@ from typing import Optional
 
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 
-from selfkraken.gui.theme import MONO_FONT, MONO_PT, Palette
+from selfkraken.gui.theme import MONO_PT, Palette, mono_family
 
 #: the two weights the diff ever uses — nothing inherits a bold face
 NORMAL = QFont.Weight.Normal
@@ -67,7 +67,7 @@ class DiffHighlighter(QSyntaxHighlighter):
 
 def monospace_font(point_size: float = MONO_PT) -> QFont:
     """The GUI's diff/console font with a sensible family."""
-    font = QFont(MONO_FONT)
+    font = QFont(mono_family())
     font.setPointSizeF(point_size)
     font.setStyleHint(QFont.StyleHint.Monospace)
     return font

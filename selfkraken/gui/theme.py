@@ -34,9 +34,10 @@ MARGIN_PANEL: Final[int] = SPACE_6
 MARGIN_GROUP: Final[int] = SPACE_6
 MARGIN_NESTED: Final[int] = 0
 
-#: gap between sibling widgets inside a panel / group
+#: gap between sibling widgets inside a group (header -> content)
 LAYOUT_SPACING: Final[int] = SPACE_4
-PANEL_SPACING: Final[int] = SPACE_6
+#: gap between two sections of a pane
+PANEL_SPACING: Final[int] = SPACE_8
 
 # --------------------------------------------------------------------------- #
 # control + row heights, one border style
@@ -45,7 +46,10 @@ BORDER_WIDTH: Final[int] = 1
 RADIUS: Final[int] = 4  #: inputs, buttons, badges, chips — everything rounded
 RADIUS_PILL: Final[int] = 9  #: half the pill height, so it reads as a capsule
 
-ROW_HEIGHT: Final[int] = 22  #: tables, trees, section headers, dock titles
+ROW_HEIGHT: Final[int] = 22  #: tables, trees, dock titles
+#: a section header is one notch shorter than a row and sits 4px above its own
+#: content, so panes read as one continuous column instead of stacked bands
+SECTION_HEADER_HEIGHT: Final[int] = 20
 GRAPH_ROW_HEIGHT: Final[int] = 24
 HEADER_HEIGHT: Final[int] = 22
 BUTTON_HEIGHT: Final[int] = 24
@@ -57,6 +61,10 @@ DOCK_TITLE_HEIGHT: Final[int] = 22
 DOCK_TITLE_INSET: Final[int] = 4
 STATUS_BAR_HEIGHT: Final[int] = 20
 ACTIVITY_LOG_HEIGHT: Final[int] = 140
+
+#: default dock widths as a share of the window: the graph keeps the rest
+LEFT_DOCK_RATIO: Final[float] = 0.16
+REVIEW_DOCK_RATIO: Final[float] = 0.34
 CELL_PADDING: Final[int] = SPACE_6  #: tables: 6px each side, header text too
 SPLITTER_HIT: Final[int] = 4  #: 1px line inside a 4px grab area
 SCROLLBAR_WIDTH: Final[int] = 10  #: thin bars: the content, not the chrome, is UI
@@ -90,9 +98,47 @@ IS_OFFSCREEN: Final[bool] = os.environ.get("QT_QPA_PLATFORM", "").strip().lower(
 
 UI_FONT: Final[str] = "DejaVu Sans" if IS_OFFSCREEN else ""
 MONO_FONT: Final[str] = "DejaVu Sans Mono"
+#: families tried for the diff/console font when the platform has no DejaVu Mono
+MONO_FALLBACKS: Final[tuple[str, ...]] = (
+    "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", "Noto Mono", "Menlo",
+    "Consolas", "Courier New",
+)
 FONT_PT: Final[float] = 9.0 if IS_OFFSCREEN else 9.5
 META_PT: Final[float] = FONT_PT - 1.0
 MONO_PT: Final[float] = 9.0
+
+# --------------------------------------------------------------------------- #
+# resolved font families
+# --------------------------------------------------------------------------- #
+# ``QFont("")`` is *not* "the UI font": on X11 it resolves to a fixed-pitch face
+# (Andale Mono here), which is how the whole window went monospace on a real
+# desktop.  The app therefore measures the platform font once at startup and
+# hands the concrete family to everything that builds a QFont by hand.
+_UI_FAMILY: str | None = None
+_MONO_FAMILY: str | None = None
+
+
+def set_ui_family(family: str) -> None:
+    """Remember the concrete UI family (called once fonts are resolved)."""
+    global _UI_FAMILY
+    if (family or "").strip():
+        _UI_FAMILY = family.strip()
+
+
+def set_mono_family(family: str) -> None:
+    global _MONO_FAMILY
+    if (family or "").strip():
+        _MONO_FAMILY = family.strip()
+
+
+def ui_family() -> str:
+    """Family for every hand-built UI font — never empty, never monospace."""
+    return _UI_FAMILY or UI_FONT or "Sans Serif"
+
+
+def mono_family() -> str:
+    """Family for the diff / sha / test-output font."""
+    return _MONO_FAMILY or MONO_FONT or "Monospace"
 
 #: default window size (the geometry the screenshots are taken at is bigger)
 WINDOW_SIZE: Final[tuple[int, int]] = (1280, 800)
@@ -260,8 +306,14 @@ def resolve(name: str, prefers_dark: bool | None = None) -> Palette:
 
 
 def ui_font_css() -> str:
-    """The ``font-family`` declaration, or '' to keep the platform UI font."""
-    return f"font-family: {UI_FONT};" if UI_FONT else ""
+    """Empty on purpose — the UI family is set on the application font instead.
+
+    A ``font-family`` in the global ``QWidget`` rule wins over every
+    per-widget ``setFont()``, which silently made the monospace diff viewer
+    proportional on a real desktop.  :func:`set_ui_family` plus
+    ``QApplication.setFont`` carry the family instead.
+    """
+    return ""
 
 
 def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
@@ -284,8 +336,6 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     QMainWindow, QDialog {{ background: {p.window}; }}
     QWidget {{
         color: {p.text};
-        {ui_font_css()}
-        font-size: {FONT_PT:g}pt;
         background: {p.window};
     }}
     QToolTip {{
@@ -352,13 +402,17 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     QPushButton:focus {{ border: {BORDER_WIDTH}px solid {p.accent}; }}
 
     /* ------------------------------------------------------------ inputs */
-    QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {{
+    QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{
         background: {p.surface}; color: {p.text};
         border: {edge}; border-radius: {RADIUS}px;
-        padding: {CONTROL_PADDING_V}px {CELL_PADDING}px; min-height: {INPUT_INNER}px;
+        padding: {CONTROL_PADDING_V}px {CELL_PADDING}px;
         selection-background-color: {p.selection_bg};
         selection-color: {p.selection_text};
     }}
+    /* min-height belongs to one-line inputs only: on a multi-line editor it
+       becomes the widget's minimum height and silently outvotes the box's own
+       (measured) minimum, crushing the diff viewer to a single line */
+    QLineEdit, QComboBox, QSpinBox {{ min-height: {INPUT_INNER}px; }}
     QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {{
         border: {BORDER_WIDTH}px solid {p.accent};
     }}

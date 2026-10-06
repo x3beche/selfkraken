@@ -23,6 +23,8 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QFontDatabase,
+    QFontInfo,
     QFontMetrics,
     QKeySequence,
     QPainter,
@@ -92,17 +94,23 @@ from selfkraken.gui.theme import (
     CELL_PADDING,
     CONTROL_PADDING_V,
     DOCK_TITLE_INSET,
+    DOCK_TITLE_HEIGHT,
     FONT_PT,
     INPUT_HEIGHT,
     LAYOUT_SPACING,
+    LEFT_DOCK_RATIO,
     MARGIN_NESTED,
     MARGIN_PANEL,
     META_PT,
+    MONO_FALLBACKS,
     MONO_FONT,
     MONO_PT,
     PANEL_SPACING,
     PILL_HEIGHT,
+    REVIEW_DOCK_RATIO,
     ROW_HEIGHT,
+    SECTION_HEADER_HEIGHT,
+    SPLITTER_HIT,
     SPACE_12,
     SPACE_4,
     SPACE_6,
@@ -111,8 +119,12 @@ from selfkraken.gui.theme import (
     UI_FONT,
     WINDOW_SIZE,
     Palette,
+    mono_family,
     resolve,
+    set_mono_family,
+    set_ui_family,
     stylesheet,
+    ui_family,
 )
 from selfkraken.gui.worker import JobRunner
 
@@ -145,17 +157,15 @@ GUIDANCE_PADDING = SPACE_12 * 2
 TOOLBAR_ICON_SIZE = SPACE_12
 #: room for a repository name plus its [SAMPLE] tag
 REPO_COMBO_WIDTH = 200
-#: docks: how far they shrink and where they open
-DOCK_MIN_WIDTH = 200
-REVIEW_MIN_WIDTH = 360
-LEFT_DOCK_WIDTH = 220
-REVIEW_DOCK_WIDTH = 440
-#: graph columns that are not the stretchy subject
-AUTHOR_COLUMN_WIDTH = 130
-#: activity log columns (Detail takes whatever is left)
-LOG_WHEN_WIDTH = 120
-LOG_KIND_WIDTH = 80
-LOG_PROPOSAL_WIDTH = 70
+#: docks: how far they shrink before the window stops them
+DOCK_MIN_WIDTH = 190
+REVIEW_MIN_WIDTH = 340
+#: the activity log opens showing at least this many rows, at most this many
+LOG_DOCK_MIN_ROWS = 4
+LOG_DOCK_MAX_ROWS = 6
+LOG_DOCK_MIN_HEIGHT = 76
+#: smallest window the layout is designed for (the 1024x700 check)
+MIN_WINDOW_WIDTH = 1024
 
 
 # --------------------------------------------------------------------------- #
@@ -200,7 +210,7 @@ class ElidedLabel(QLabel):
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         style = []
         if mono:
-            style.append(f"font-family: {MONO_FONT}; font-size: {MONO_PT:g}pt;")
+            style.append(f'font-family: "{mono_family()}"; font-size: {MONO_PT:g}pt;')
         if muted and palette is not None:
             style.append(f"color: {palette.muted}; font-size: {META_PT:g}pt;")
         if style:
@@ -263,6 +273,42 @@ class WrappedLabel(QLabel):
         self.updateGeometry()
 
 
+class AutoHeightPlainText(QPlainTextEdit):
+    """Read-only text box that is exactly as tall as its wrapped content.
+
+    ``QPlainTextEdit`` reports a fixed sizeHint, so a one-line rationale was
+    laid out as one line and then clipped (with a horizontal scrollbar drawn
+    over it) once the real font made the text wider.  This wraps, measures the
+    *visual* line count and grows to at most ``max_lines`` before scrolling.
+    """
+
+    def __init__(
+        self,
+        max_lines: int = RATIONALE_MAX_LINES,
+        point_size: float = FONT_PT,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._max_lines = max(max_lines, 1)
+        self._point_size = point_size
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.document().setDocumentMargin(TEXT_BOX_MARGIN)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.textChanged.connect(self.refit_to_content)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt name
+        super().resizeEvent(event)
+        self.refit_to_content()
+
+    def refit_to_content(self) -> None:
+        """One line for short text, up to ``_max_lines``, then it scrolls."""
+        lines = max(self.document().lineCount(), 1)
+        self.setFixedHeight(box_height_for(self, min(lines, self._max_lines)))
+
+
 class SectionHeader(QFrame):
     """Compact section header: uppercase semibold muted label + 1px rule.
 
@@ -307,7 +353,7 @@ class SectionHeader(QFrame):
         row.setSpacing(SPACE_4)
         row.addWidget(self._button, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self._rule, 1, Qt.AlignmentFlag.AlignVCenter)
-        self.setFixedHeight(ROW_HEIGHT)
+        self.setFixedHeight(SECTION_HEADER_HEIGHT)
         self._refresh()
 
     # -- text ---------------------------------------------------------------
@@ -465,24 +511,31 @@ def line_height(point_size: float) -> int:
     """Pixel height of one text line at *point_size* (measured once per size)."""
     key = round(float(point_size), 2)
     if key not in _LINE_HEIGHTS:
-        font = QFont(UI_FONT)
+        font = QFont(ui_family())
         font.setPointSizeF(key)
         _LINE_HEIGHTS[key] = QFontMetrics(font).height()
     return _LINE_HEIGHTS[key]
 
 
-def box_height(lines: int, point_size: float = FONT_PT) -> int:
-    """Height of a plain-text box that shows exactly *lines* lines of text.
+def control_height(minimum: int, point_size: float, padding: int = CONTROL_PADDING_V) -> int:
+    """A fixed control height that can never clip text at *point_size*.
 
-    Mirrors what the stylesheet gives the widget: a border and
-    ``CONTROL_PADDING_V`` on each side, plus the slack that keeps a box whose
-    text just fits from showing a scrollbar.  One line is exactly a row.
+    ``minimum`` is the design-system height (24px buttons, 20px pill…); a wider
+    system font simply makes the control taller instead of cutting its text off.
     """
+    return max(
+        minimum,
+        line_height(point_size) + 2 * padding + 2 * BORDER_WIDTH + 2,
+    )
+
+
+def box_height_for(widget: QWidget, lines: int) -> int:
+    """Height of a plain-text box measured with the widget's own font."""
     return (
         2 * BORDER_WIDTH
         + 2 * CONTROL_PADDING_V
         + 2 * TEXT_BOX_MARGIN
-        + max(lines, 1) * line_height(point_size)
+        + max(lines, 1) * widget.fontMetrics().height()
         + TEXT_BOX_SLACK
     )
 
@@ -536,6 +589,7 @@ class MainWindow(QMainWindow):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        resolve_font_families()  # before any QFont or stylesheet is built
         self.settings = settings or load_settings()
         self.palette: Palette = resolve(theme, prefers_dark=_system_prefers_dark())
         self.store = Store(self.settings.db_path)  # UI-thread light reads only
@@ -549,6 +603,8 @@ class MainWindow(QMainWindow):
         self._current_repo_id: Optional[int] = None
         self._selected_proposal_id: Optional[int] = None
         self._suppress_signals = False
+        self._docks_balanced = False
+        self._log_dock_height: Optional[int] = None
         self._files: list[str] = []
         self._request_valid = False
 
@@ -651,7 +707,7 @@ class MainWindow(QMainWindow):
         repo_label.setAccessibleName("Repository selector label")
         self.repo_combo = QComboBox()
         self.repo_combo.setMinimumWidth(REPO_COMBO_WIDTH)
-        self.repo_combo.setFixedHeight(INPUT_HEIGHT)
+        self.repo_combo.setFixedHeight(control_height(INPUT_HEIGHT, FONT_PT))
         self.repo_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
@@ -671,7 +727,7 @@ class MainWindow(QMainWindow):
         # the buttons keep their height from the style's own margins; pin it so
         # the row is exactly one BUTTON_HEIGHT plus the panel padding
         for widget in bar.findChildren(QToolButton):
-            widget.setFixedHeight(BUTTON_HEIGHT)
+            widget.setFixedHeight(control_height(BUTTON_HEIGHT, FONT_PT))
 
         # the two sample actions share one dropdown so the row stays short
         self.sample_menu = QMenu(self)
@@ -683,7 +739,7 @@ class MainWindow(QMainWindow):
         self.sample_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.sample_button.setAccessibleName("Sample data")
         self.sample_button.setToolTip("Load or remove the [SAMPLE] demo data")
-        self.sample_button.setFixedHeight(BUTTON_HEIGHT)
+        self.sample_button.setFixedHeight(control_height(BUTTON_HEIGHT, FONT_PT))
         bar.addWidget(self.sample_button)
 
         spacer = QWidget()
@@ -694,7 +750,8 @@ class MainWindow(QMainWindow):
         self.model_status.setObjectName("modelPill")
         self.model_status.setAccessibleName("Model status")
         self.model_status.setTextFormat(Qt.TextFormat.PlainText)
-        self.model_status.setFixedHeight(PILL_HEIGHT)
+        # height comes from the stylesheet's min-height + padding, so a wider
+        # system font grows the pill instead of cutting its text off
         if self.settings.llm_enabled:
             host = _host_of(self.settings.llm_base_url or "")
             self.model_status.setText(f"Model: {self.settings.llm_model} @ {host}")
@@ -714,6 +771,33 @@ class MainWindow(QMainWindow):
                 "Or paste a unified diff in the 'New proposal' section instead."
             )
         bar.addWidget(self.model_status)
+        self._align_toolbar_row(bar)
+
+    def _align_toolbar_row(self, bar: QToolBar) -> None:
+        """One row, one baseline: fixed heights stop the layout stretching.
+
+        Without this the label and the combo are pulled to the toolbar's full
+        height while the buttons keep their own, so the row reads as items
+        sitting at different levels.
+        """
+        button_height = control_height(BUTTON_HEIGHT, FONT_PT)
+        for widget in bar.findChildren(QWidget):
+            if widget.objectName() == "qt_toolbar_ext_button":  # overflow arrow
+                continue
+            if isinstance(widget, QToolButton):
+                widget.setFixedHeight(button_height)
+            elif isinstance(widget, QComboBox):
+                widget.setFixedHeight(control_height(INPUT_HEIGHT, FONT_PT))
+            elif isinstance(widget, QLabel):
+                widget.setFixedHeight(
+                    PILL_HEIGHT if widget.objectName() == "modelPill" else button_height
+                )
+        layout = bar.layout()
+        if layout is not None:
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                if item is not None:
+                    item.setAlignment(item.alignment() | Qt.AlignmentFlag.AlignVCenter)
 
     # ---------------------------------------------------------------- central
     def _build_central(self) -> None:
@@ -761,12 +845,11 @@ class MainWindow(QMainWindow):
             1, ProposalStatusDelegate(self.palette, self.proposals_table)
         )
         header = self.proposals_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        for column in (0, 1, 3, 4):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.proposals_table.setMinimumWidth(0)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(SPACE_12 * 3)
         self.proposals_table.setAccessibleName("Proposals table")
         self.proposals_table.setAccessibleDescription(
             "Stored proposals, newest first. Columns: id, status, request, model, created."
@@ -834,7 +917,9 @@ class MainWindow(QMainWindow):
         inner = QWidget()
         inner.setObjectName("reviewPane")
         column = QVBoxLayout(inner)
-        column.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        # 4px under the dock title: the title bar already draws the separator,
+        # so a full panel margin on top would read as an empty band
+        column.setContentsMargins(MARGIN_PANEL, LAYOUT_SPACING, MARGIN_PANEL, MARGIN_PANEL)
         column.setSpacing(PANEL_SPACING)
 
         # -- commit details (revealed by a graph selection) -----------------
@@ -861,7 +946,7 @@ class MainWindow(QMainWindow):
         self.commit_message_edit.setReadOnly(True)
         self.commit_message_edit.setFont(monospace_font(MONO_PT))
         self.commit_message_edit.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.commit_message_edit.setFixedHeight(box_height(COMMIT_MESSAGE_LINES, MONO_PT))
+        self.commit_message_edit.setFixedHeight(box_height_for(self.commit_message_edit, COMMIT_MESSAGE_LINES))
         self.commit_message_edit.setAccessibleName("Commit message")
         for row, (caption_text, widget) in enumerate(
             (
@@ -881,13 +966,17 @@ class MainWindow(QMainWindow):
         column.addWidget(self.commit_group)
 
         # -- new proposal form (collapsible so the diff gets the space) ------
+        self.new_proposal_section = QWidget()
+        proposal_box = QVBoxLayout(self.new_proposal_section)
+        proposal_box.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
+        proposal_box.setSpacing(LAYOUT_SPACING)
         self.new_proposal_toggle = SectionHeader(
             "New proposal", self.palette, collapsible=True
         )
         self.new_proposal_toggle.setAccessible("Toggle new proposal form")
         self.new_proposal_toggle.setToolTip("Ctrl+N opens it again")
         self.new_proposal_toggle.toggled.connect(self._on_new_proposal_toggle)
-        column.addWidget(self.new_proposal_toggle)
+        proposal_box.addWidget(self.new_proposal_toggle)
 
         form = QWidget()
         form.setObjectName("proposalForm")
@@ -900,7 +989,7 @@ class MainWindow(QMainWindow):
         self.request_edit = QPlainTextEdit()
         self.request_edit.setTabChangesFocus(True)
         self.request_edit.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.request_edit.setFixedHeight(box_height(REQUEST_LINES, FONT_PT))
+        self.request_edit.setFixedHeight(box_height_for(self.request_edit, REQUEST_LINES))
         self.request_edit.setAccessibleName("Proposal request")
         self.request_edit.setPlaceholderText(
             "e.g. Guard divide() against a zero divisor and add a test for it"
@@ -940,7 +1029,7 @@ class MainWindow(QMainWindow):
         )
         self.diff_input.setFont(monospace_font(MONO_PT))
         self.diff_input.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.diff_input.setFixedHeight(box_height(PASTED_DIFF_LINES, MONO_PT))
+        self.diff_input.setFixedHeight(box_height_for(self.diff_input, PASTED_DIFF_LINES))
         self.diff_input.setAccessibleName("Pasted unified diff")
         self.diff_input.setVisible(False)
         self.diff_box.toggled.connect(self.diff_input.setVisible)
@@ -969,7 +1058,7 @@ class MainWindow(QMainWindow):
         form_layout.addWidget(self.diff_input)
         form_layout.addLayout(submit_row)
         self.proposal_form = form
-        column.addWidget(form)
+        proposal_box.addWidget(form)
 
         # -- proposal detail --------------------------------------------------
         self.detail_group = QWidget()
@@ -988,13 +1077,9 @@ class MainWindow(QMainWindow):
         detail_layout.addWidget(self.detail_meta)
 
         rationale_caption = field_label("Rationale")
-        self.rationale_edit = QPlainTextEdit()
-        self.rationale_edit.setReadOnly(True)
-        self.rationale_edit.document().setDocumentMargin(TEXT_BOX_MARGIN)
+        self.rationale_edit = AutoHeightPlainText(RATIONALE_MAX_LINES, FONT_PT)
         self.rationale_edit.setAccessibleName("Proposal rationale")
         rationale_caption.setBuddy(self.rationale_edit)
-        self.rationale_edit.textChanged.connect(self._fit_rationale)
-        self._fit_rationale()
 
         diff_caption = field_label("Diff")
         self.diff_view = QPlainTextEdit()
@@ -1002,7 +1087,7 @@ class MainWindow(QMainWindow):
         self.diff_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.diff_view.setFont(monospace_font(MONO_PT))
         self.diff_view.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.diff_view.setMinimumHeight(box_height(DIFF_MIN_LINES, MONO_PT))
+        self.diff_view.setMinimumHeight(box_height_for(self.diff_view, DIFF_MIN_LINES))
         self.diff_view.setAccessibleName("Proposal diff viewer")
         diff_caption.setBuddy(self.diff_view)
         self.diff_highlighter = DiffHighlighter(self.diff_view.document(), self.palette)
@@ -1075,23 +1160,50 @@ class MainWindow(QMainWindow):
         self.tests_output.setReadOnly(True)
         self.tests_output.setFont(monospace_font(MONO_PT))
         self.tests_output.document().setDocumentMargin(TEXT_BOX_MARGIN)
-        self.tests_output.setFixedHeight(box_height(TEST_OUTPUT_LINES, MONO_PT))
+        self.tests_output.setFixedHeight(box_height_for(self.tests_output, TEST_OUTPUT_LINES))
         self.tests_output.setVisible(False)
         self.tests_output.setAccessibleName("Test output tail")
         self.tests_toggle.toggled.connect(self.tests_output.setVisible)
-        column.addWidget(self.tests_toggle)
-        column.addWidget(self.tests_output)
+        self.tests_toggle.toggled.connect(lambda _open: self._sync_review_minimum())
+        tests_box = QVBoxLayout()
+        tests_box.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
+        tests_box.setSpacing(LAYOUT_SPACING)
+        tests_box.addWidget(self.tests_toggle)
+        tests_box.addWidget(self.tests_output)
+        column.addLayout(tests_box)
 
         scroll = QScrollArea()
         scroll.setObjectName("reviewScroll")
+        # the pane must never squeeze a section below its own minimum to make
+        # everything fit: it scrolls instead, so the diff keeps its height
+        inner.setMinimumHeight(0)
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         dock.setWidget(scroll)
         self.right_scroll = scroll
+        self._right_ready = True
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.right_dock = dock
+
+    def _sync_review_minimum(self) -> None:
+        """Let the review pane scroll rather than crush the diff viewer.
+
+        The scroll area sizes its widget to the viewport, and when the open
+        sections need more room than that the layout used to take it all out of
+        the diff box.  Pinning the widget's minimum to the layout's own minimum
+        makes the scrollbar appear instead, and the diff keeps the rest.
+        """
+        inner = self.right_scroll.widget()
+        layout = inner.layout()
+        if layout is None:
+            return
+        layout.activate()
+        inner.setMinimumHeight(layout.totalMinimumSize().height())
+        self.right_scroll.verticalScrollBar().setValue(
+            self.right_scroll.verticalScrollBar().value()
+        )
 
     def _form_caption(self, text: str, buddy: QWidget) -> QLabel:
         """Right-aligned muted caption of the two-column detail form."""
@@ -1099,17 +1211,6 @@ class MainWindow(QMainWindow):
         caption.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         caption.setBuddy(buddy)
         return caption
-
-    def _fit_rationale(self) -> None:
-        """Rationale shows all its text up to a few lines, then it scrolls.
-
-        ``lineCount`` already counts wrapped lines, so the box is exactly as
-        tall as its text and never clips the last line.
-        """
-        lines = max(self.rationale_edit.document().lineCount(), 1)
-        self.rationale_edit.setFixedHeight(
-            box_height(min(lines, RATIONALE_MAX_LINES), FONT_PT)
-        )
 
     # ------------------------------------------------------------ bottom dock
     def _build_bottom_dock(self) -> None:
@@ -1122,13 +1223,13 @@ class MainWindow(QMainWindow):
         compact_item_view(self.log_table)
         self.log_table.setAlternatingRowColors(True)
         log_header = self.log_table.horizontalHeader()
-        log_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        log_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        log_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        # When / Kind / Proposal are measured by the view itself from the real
+        # data and the real font, Detail stretches
+        for column in (0, 1, 2):
+            log_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         log_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.log_table.setColumnWidth(0, LOG_WHEN_WIDTH)
-        self.log_table.setColumnWidth(1, LOG_KIND_WIDTH)
-        self.log_table.setColumnWidth(2, LOG_PROPOSAL_WIDTH)
+        log_header.setStretchLastSection(False)
+        log_header.setMinimumSectionSize(SPACE_12 * 3)
         self.log_table.setAccessibleName("Activity log")
         self.log_table.setAccessibleDescription(
             "Audit trail: every register, index, propose, apply, test, commit, "
@@ -1137,12 +1238,24 @@ class MainWindow(QMainWindow):
         dock.setWidget(self.log_table)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
         self.bottom_dock = dock
+        self._apply_dock_ratios()
+        self.resizeDocks([dock], [ACTIVITY_LOG_HEIGHT], Qt.Orientation.Vertical)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt name
+        super().showEvent(event)
+        if not self._docks_balanced:
+            self._docks_balanced = True
+            self._apply_dock_ratios()
+            self._fit_log_dock()
+
+    def _apply_dock_ratios(self) -> None:
+        """Left dock ~16% of the window, review pane ~34%, graph keeps the rest."""
+        width = max(self.width(), MIN_WINDOW_WIDTH)
         self.resizeDocks(
             [self.left_dock, self.right_dock],
-            [LEFT_DOCK_WIDTH, REVIEW_DOCK_WIDTH],
+            [round(width * LEFT_DOCK_RATIO), round(width * REVIEW_DOCK_RATIO)],
             Qt.Orientation.Horizontal,
         )
-        self.resizeDocks([dock], [ACTIVITY_LOG_HEIGHT], Qt.Orientation.Vertical)
 
     def _make_dock(self, title: str, object_name: str) -> QDockWidget:
         """A dock with the one compact title bar the whole window uses.
@@ -1161,14 +1274,10 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         bar = self.statusBar()
         bar.setSizeGripEnabled(False)
-        bar.setFixedHeight(STATUS_BAR_HEIGHT)
-        margins = bar.contentsMargins()
-        margins.setLeft(MARGIN_PANEL)
-        margins.setRight(MARGIN_PANEL)
-        margins.setTop(0)
-        margins.setBottom(0)
-        bar.setContentsMargins(margins)
-        bar.layout().setSpacing(SPACE_8)
+        bar.setMinimumHeight(STATUS_BAR_HEIGHT)
+        layout = bar.layout()
+        layout.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, 0)
+        layout.setSpacing(SPACE_8)
         self.status_label = ElidedLabel("Ready.", self.palette)
         self.status_label.setAccessibleName("Status message")
         bar.addWidget(self.status_label, 1)
@@ -1305,6 +1414,8 @@ class MainWindow(QMainWindow):
             self.repo_combo.setCurrentIndex(index)
         finally:
             self._suppress_signals = False
+        self._docks_balanced = False
+        self._log_dock_height: Optional[int] = None
         new_id = self._combo_repo_id()
         repo_changed = new_id != previous
         self._current_repo_id = new_id
@@ -1352,6 +1463,28 @@ class MainWindow(QMainWindow):
 
     def refresh_log(self) -> None:
         self.log_model.set_changes(self.store.list_changes(limit=LOG_LIMIT))
+        self._fit_log_dock()
+
+    def _fit_log_dock(self) -> None:
+        """No dead band under a short log: the dock is as tall as its rows.
+
+        Capped at ACTIVITY_LOG_HEIGHT and floored at a couple of rows, and left
+        alone once the user has dragged the splitter themselves.
+        """
+        rows = self.log_model.rowCount()
+        row_height = self.log_table.verticalHeader().defaultSectionSize()
+        header = self.log_table.horizontalHeader().sizeHint().height()
+        needed = (
+            header
+            + max(min(rows, LOG_DOCK_MAX_ROWS), LOG_DOCK_MIN_ROWS) * row_height
+            + 2 * MARGIN_PANEL
+            + DOCK_TITLE_HEIGHT
+            + SPLITTER_HIT
+        )
+        height = max(LOG_DOCK_MIN_HEIGHT, min(needed, ACTIVITY_LOG_HEIGHT))
+        if self.bottom_dock.height() in (self._log_dock_height, 0) or self._log_dock_height is None:
+            self.resizeDocks([self.bottom_dock], [height], Qt.Orientation.Vertical)
+            self._log_dock_height = height
 
     def reload_all(self, select_id: Optional[int] = None) -> None:
         """Full reload after a mutation that can change the whole world."""
@@ -1556,6 +1689,7 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------- proposals
     def _on_new_proposal_toggle(self, open_form: bool) -> None:
         self.proposal_form.setVisible(open_form)
+        self._sync_review_minimum()
 
     def _set_form_open(self, open_form: bool) -> None:
         """Collapse the form (from the header) so the diff owns the pane."""
@@ -1675,6 +1809,7 @@ class MainWindow(QMainWindow):
             self._update_detail_buttons()
             self._set_form_open(True)
             return
+        self._sync_review_minimum()
         self._selected_proposal_id = proposal.id
         sample_note = " · [SAMPLE]" if proposal.is_sample else ""
         self.detail_meta.setText(
@@ -1688,6 +1823,7 @@ class MainWindow(QMainWindow):
         self._update_detail_buttons()
         self._update_empty_states()
         self._set_form_open(False)  # the diff gets the whole pane
+        self._sync_review_minimum()
 
     def _load_test_tail(self, proposal_id: int) -> None:
         runs = self.store.list_test_runs(proposal_id=proposal_id)
@@ -1906,6 +2042,7 @@ class MainWindow(QMainWindow):
             return
         commit = graph_row.commit
         self.commit_group.setVisible(True)
+        self._sync_review_minimum()
         self.commit_sha_label.setText(f"{commit.sha[:16]}…")
         self.commit_sha_label.setToolTip(commit.sha)
         self.commit_author_label.setText(f"{commit.author} · {local_time(commit.date)}")
@@ -1995,6 +2132,11 @@ class MainWindow(QMainWindow):
             self._geometry_file.write_text(json.dumps(state), encoding="utf-8")
         except OSError:  # pragma: no cover - a missing write is never fatal
             pass
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt name
+        super().resizeEvent(event)
+        if getattr(self, "_right_ready", False):
+            self._sync_review_minimum()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt name
         self._save_geometry()
@@ -2102,9 +2244,51 @@ def _system_prefers_dark() -> Optional[bool]:
 # --------------------------------------------------------------------------- #
 # entry point
 # --------------------------------------------------------------------------- #
+_PLATFORM_UI_FAMILY: Optional[str] = None
+
+
+def resolve_font_families(app: Optional[QApplication] = None) -> None:
+    """Capture the platform's UI and monospace families, once, before use.
+
+    ``QApplication.font()`` is the desktop's own UI font (Ubuntu Sans here);
+    ``QFont("")`` is *not* — on X11 it resolves to a fixed-pitch face, which is
+    how the whole window went monospace.  Every hand-built font in the GUI is
+    derived from what is captured here.
+    """
+    global _PLATFORM_UI_FAMILY
+    instance = app or QApplication.instance()
+    if instance is None:  # pragma: no cover - no Qt, nothing to resolve
+        return
+    if _PLATFORM_UI_FAMILY is None:
+        # the offscreen build is pinned to DejaVu (that is what the screenshots
+        # are made of); a real desktop uses its own UI font, never QFont("")
+        _PLATFORM_UI_FAMILY = (
+            UI_FONT or QFontInfo(instance.font()).family() or "Sans Serif"
+        )
+        set_mono_family(_resolve_mono_family(instance))
+    set_ui_family(_PLATFORM_UI_FAMILY)
+
+
+def _resolve_mono_family(app: QApplication) -> str:
+    """The platform monospace font, else the first installed candidate we know."""
+    try:
+        fixed = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        family = QFontInfo(fixed).family()
+        if family and QFontInfo(fixed).fixedPitch():
+            return family
+    except Exception:  # pragma: no cover - Qt without a fixed system font
+        pass
+    available = {name.casefold() for name in QFontDatabase.families()}
+    for candidate in MONO_FALLBACKS:
+        if candidate.casefold() in available:
+            return candidate
+    return MONO_FONT
+
+
 def apply_theme(app: QApplication, palette: Palette) -> None:
     """The design system's fonts and colours for the whole application."""
-    base_font = QFont(UI_FONT)
+    resolve_font_families(app)
+    base_font = QFont(ui_family())
     base_font.setPointSizeF(FONT_PT)
     app.setFont(base_font)
     qp = QPalette()

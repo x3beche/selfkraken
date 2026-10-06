@@ -256,8 +256,14 @@ def test_stylesheet_is_built_from_the_design_tokens() -> None:
     from selfkraken.gui.theme import stylesheet
 
     css = stylesheet(DARK)
-    assert f"font-size: {theme.FONT_PT:g}pt" in css
     assert f"font-size: {theme.META_PT:g}pt" in css
+    # the body tier is carried by the application font, NOT by a global
+    # `QWidget { font-size }`: that rule made Qt discard the smaller "meta"
+    # font a table model sets per cell, so dates and authors silently grew back
+    # to body size and truncated their columns
+    assert "QWidget {" in css
+    widget_block = css.split("QWidget {", 1)[1].split("}", 1)[0]
+    assert "font-size" not in widget_block, widget_block
     assert "2px solid" not in css, "focus must not change the border width"
     assert css.count(f"{theme.BORDER_WIDTH}px solid") > 10
     assert f"border-radius: {theme.RADIUS}px" in css

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from selfkraken.gitops import run_git
 from selfkraken.graph import Branch, GraphRow
-from selfkraken.gui.models import GraphTableModel
+from selfkraken.gui.models import TIMESTAMP_SAMPLE, GraphTableModel, sized_column_width
 from selfkraken.gui.theme import (
     BADGE_GAP,
     BADGE_H_PAD,
@@ -38,8 +38,8 @@ from selfkraken.gui.theme import (
     GRAPH_ROW_HEIGHT,
     META_PT,
     SPACE_6,
-    UI_FONT,
     Palette,
+    ui_family,
 )
 
 #: row metrics — taken from the shared design system (graph rows run 24px)
@@ -49,12 +49,14 @@ LANE_LEFT_PAD = SPACE_6  # lane block inset, mirrored on the right
 DOT_RADIUS = 4.0
 LINE_WIDTH = 2.0
 BADGE_FONT_PT = META_PT
-REFS_COLUMN_MAX = 178
+REFS_COLUMN_MAX = 260  # the widest badge run we will make room for
+#: the author column may always elide further than this (tooltip has the rest)
+AUTHOR_COLUMN_MAX = 110  # names elide; the tooltip has the whole one
 
 
 def header_font() -> QFont:
     """The font the styled header sections actually use."""
-    font = QFont(UI_FONT)
+    font = QFont(ui_family())
     font.setPointSizeF(META_PT)
     font.setBold(True)
     return font
@@ -170,8 +172,9 @@ def paint_refs_cell(
     if not badges:
         painter.restore()
         return
+    shown = 0
     previous_font = painter.font()
-    font = QFont(UI_FONT)
+    font = QFont(ui_family())
     font.setPointSizeF(BADGE_FONT_PT)
     painter.setFont(font)
     x = float(rect.left() + CELL_PADDING)
@@ -181,13 +184,26 @@ def paint_refs_cell(
         width = metrics.horizontalAdvance(text) + 2 * BADGE_H_PAD
         box = QRectF(x, centre_y - BADGE_HEIGHT / 2.0, width, BADGE_HEIGHT)
         if box.right() > rect.right() - BORDER_WIDTH:
-            break  # clipped run: never paint overlapping or cut-off badges
+            break  # the run needs a "+N" chip instead of a cut-off badge
+        shown += 1
         painter.setPen(QPen(QColor(border), 1.0))
         painter.setBrush(QColor(bg))
         painter.drawRoundedRect(box, BADGE_RADIUS, BADGE_RADIUS)
         painter.setPen(QPen(QColor(fg)))
         painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
         x += width + BADGE_GAP
+    hidden = len(badges) - shown
+    if hidden > 0:
+        # the refs that did not fit are counted, never dropped silently
+        label = f"+{hidden}"
+        width = metrics.horizontalAdvance(label) + 2 * BADGE_H_PAD
+        box = QRectF(x, centre_y - BADGE_HEIGHT / 2.0, width, BADGE_HEIGHT)
+        if box.right() <= rect.right() - BORDER_WIDTH:
+            painter.setPen(QPen(QColor(palette.border), 1.0))
+            painter.setBrush(QColor(palette.panel))
+            painter.drawRoundedRect(box, BADGE_RADIUS, BADGE_RADIUS)
+            painter.setPen(QPen(QColor(palette.muted)))
+            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
     painter.setFont(previous_font)
     painter.restore()
 
@@ -202,7 +218,7 @@ class GraphDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._table_model = table_model
         self._palette = palette
-        self._badge_font = QFont(UI_FONT)
+        self._badge_font = QFont(ui_family())
         self._badge_font.setPointSizeF(BADGE_FONT_PT)
         self._badge_metrics = QFontMetrics(self._badge_font)
 
@@ -229,6 +245,7 @@ class GraphDelegate(QStyledItemDelegate):
         header = QFontMetrics(header_font()).horizontalAdvance(
             self._table_model.COLUMNS[1]
         )
+        # exactly as wide as the widest badge run that is actually present
         return min(max(run + 2 * CELL_PADDING, header + 2 * CELL_PADDING), REFS_COLUMN_MAX)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:  # noqa: D102
@@ -332,8 +349,24 @@ class GraphView(QTableView):
                 LANE_WIDTH, LANE_LEFT_PAD, graph_column_minimum()
             ),
         )
+        # Refs takes only what its badges need; Subject gets all the stretch
         self.setColumnWidth(1, self.graph_delegate.refs_width())
-        self.setColumnWidth(3, 130)
+        # Author and Date are measured from the real font: the date column always
+        # fits "YYYY-MM-DD HH:MM", the author column fits the longest author in
+        # the history up to a cap (longer names elide, with the tooltip).
+        authors = [row.commit.author for row in self.table_model.rows()] or ["Author"]
+        widest_author = max(authors, key=len)
+        self.setColumnWidth(
+            3,
+            min(
+                sized_column_width(self, widest_author, self.table_model.COLUMNS[3]),
+                AUTHOR_COLUMN_MAX,
+            ),
+        )
+        self.setColumnWidth(
+            4,
+            sized_column_width(self, TIMESTAMP_SAMPLE, self.table_model.COLUMNS[4]),
+        )
 
     def _emit_selection(self, _selected, _deselected) -> None:
         rows = self.selectionModel().selectedRows()
