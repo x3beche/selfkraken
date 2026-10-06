@@ -16,8 +16,8 @@ if [ ! -d .venv ]; then
   python3.12 -m venv .venv
 fi
 
-echo "Installing selfkraken (editable, with dev extras)..."
-.venv/bin/pip install -e '.[dev]'
+echo "Installing selfkraken (editable, with dev + GUI extras)..."
+.venv/bin/pip install -e '.[dev,gui]'
 
 # Config file: copy the example once, keep it private.
 if [ ! -f .env ]; then

@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
@@ -777,6 +778,35 @@ def tree(
         )
         if proposal_id is not None:
             _note(f"highlighting {len(highlight)} file(s) touched by proposal {proposal_id}")
+
+
+# --------------------------------------------------------------------------- #
+# desktop GUI (PySide6 is imported lazily: the core install never needs it)
+# --------------------------------------------------------------------------- #
+@app.command("gui")
+@_guarded
+def gui(
+    theme: str = typer.Option(
+        "auto",
+        "--theme",
+        help="GUI colour theme: auto (follow the system), dark or light.",
+    ),
+) -> None:
+    """Open the native Qt desktop window (requires the optional gui extra)."""
+    try:
+        from selfkraken.gui.app import run
+    except ImportError:
+        # app.py is the only module that imports PySide6, so a missing Qt here
+        # means a core-only install.  The message is escaped so rich prints
+        # the literal 'selfkraken[gui]' extra name.
+        _error(
+            escape(
+                "the desktop GUI needs PySide6 — install with: "
+                "pip install 'selfkraken[gui]'"
+            )
+        )
+        raise typer.Exit(EXIT_FAILED)
+    raise typer.Exit(run(theme=theme))
 
 
 # --------------------------------------------------------------------------- #

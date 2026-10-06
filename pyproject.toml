@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "build>=1.2"]
+gui = ["PySide6>=6.6"]
 
 [project.scripts]
 skraken = "selfkraken.cli:app"
