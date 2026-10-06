@@ -24,10 +24,10 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics, QTextDocument  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QLabel  # noqa: E402
 
 from selfkraken import workflow  # noqa: E402
-from selfkraken.config import Settings, load_settings  # noqa: E402
+
 from selfkraken.db import Store  # noqa: E402
 from selfkraken.graph import layout, list_branches, read_commits  # noqa: E402
 
@@ -42,52 +42,8 @@ from fixtures_git import make_multibranch_repo  # noqa: E402
 # --------------------------------------------------------------------------- #
 # fixtures
 # --------------------------------------------------------------------------- #
-@pytest.fixture(scope="session")
-def qapp() -> QApplication:
-    app = QApplication.instance() or QApplication(sys.argv[:1])
-    return app
-
-
-@pytest.fixture
-def gui_settings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Settings:
-    """Temp data dir for both the UI store and the workers' load_settings()."""
-    data_dir = tmp_path / "data"
-    monkeypatch.setenv("SK_DATA_DIR", str(data_dir))
-    for variable in ("SK_LLM_BASE_URL", "SK_LLM_API_KEY", "SK_LLM_MODEL"):
-        monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setenv("SK_TEST_TIMEOUT", "120")
-    return load_settings(env={**os.environ, "SK_DATA_DIR": str(data_dir)}, load_dotenv_file=False)
-
-
-@pytest.fixture
-def no_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never block on a modal QMessageBox in offscreen tests."""
-    monkeypatch.setattr(
-        QMessageBox, "question",
-        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        QMessageBox, "critical",
-        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        QMessageBox, "warning",
-        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
-        raising=False,
-    )
-
-
-@pytest.fixture
-def window(qapp, gui_settings, no_dialogs):
-    from selfkraken.gui.app import MainWindow
-
-    win = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
-    yield win
-    win.close()
+# qapp, gui_settings, no_dialogs and window live in tests/conftest.py so the
+# Monaco tests can drive the same window.
 
 
 # --------------------------------------------------------------------------- #

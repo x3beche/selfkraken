@@ -64,6 +64,18 @@ class DiffHighlighter(QSyntaxHighlighter):
         if fmt is not None:
             self.setFormat(0, len(text), fmt)
 
+    def set_palette(self, palette: Palette) -> None:
+        """Rebuild the four formats for another palette (``--theme`` switch)."""
+        self._palette = palette
+        d = palette.diff
+        self._formats = {
+            "add": _fmt(d["add"][0], d["add"][1], NORMAL),
+            "del": _fmt(d["del"][0], d["del"][1], NORMAL),
+            "hunk": _fmt(d["hunk"][0], d["hunk"][1], NORMAL),
+            "header": _fmt(d["header"][0], "", BOLD),
+        }
+        self.rehighlight()
+
 
 def monospace_font(point_size: float = MONO_PT) -> QFont:
     """The GUI's diff/console font with a sensible family."""

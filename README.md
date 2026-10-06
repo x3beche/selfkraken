@@ -22,10 +22,11 @@ It is **not**:
   gives you, with the same limits it has.
 - **not large-context infrastructure.** It sends at most `SK_MAX_CONTEXT_CHARS`
   of repo snippets per request. There is no embedding pipeline, no RAG platform.
-- **not an IDE.** No editor, no plugins, no sub-100ms autocomplete loop.
+- **not an IDE.** No editing, no plugins, no sub-100ms autocomplete loop.
   There is a native desktop GUI (`skraken gui`, see below) for the core loop —
-  review, apply, test, keep or roll back — but you still type your git
-  commands elsewhere.
+  review, apply, test, keep or roll back — and it shows code in the VS Code
+  editor (Monaco, read-only), but you still type your git commands and your
+  edits elsewhere.
 
 ## Quick start
 
@@ -141,7 +142,7 @@ printed, logged, or stored in the database.
 | `skraken log [--limit N]` | Audit log: every register/index/propose/apply/test/rollback/commit/reject/revert |
 | `skraken export FILE` / `import FILE` | JSON portability (index not included; rebuild with `index`) |
 | `skraken sample load [--kind calculator\|multibranch]` / `sample remove` | Labelled demo repos and proposals inside the data dir (see *Sample data*) |
-| `skraken gui [--theme auto\|dark\|light] [--skip-checks]` | Open the native Qt desktop window (needs the `gui` extra + one system library — see *Desktop GUI (Qt)*) |
+| `skraken gui [--theme auto\|dark\|light] [--skip-checks]` | Open the native Qt desktop window — code shown in the vendored Monaco editor (needs the `gui` extra + one system library — see *Desktop GUI (Qt)*) |
 | `skraken doctor` | Environment check: data path, DB, git, model mode |
 
 Repo commands accept `--repo PATH` (default: the current directory, resolved to
@@ -167,7 +168,12 @@ Modules: `config` (settings/.env), `db` (SQLite store), `gitops`/`diffs`
 (git subprocess + diff validation), `indexer` (incremental file index +
 context building), `llm` (OpenAI-compatible client), `runner` (test execution),
 `workflow` (the UI-free core loop), `cli` (Typer front end), `portability`
-(export/import), `sample` (demo data). See
+(export/import), `sample` (demo data). The GUI adds `gui/app` (the window),
+`gui/graph_widget` (the painted commit graph), `gui/models` (Qt item models),
+`gui/theme` (the design tokens both the Qt stylesheet and the Monaco theme are
+built from), `gui/monaco_view` + `gui/monaco_payload` (the embedded editor, its
+request policy and its plain-text fallback) and `gui/preflight` (the checks that
+run before Qt is imported). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the module map, sequence
 diagram, proposal state machine and security boundaries.
 
@@ -224,9 +230,9 @@ ownership marker inside the data directory.
 
 ## Desktop GUI (Qt)
 
-A native PySide6 desktop window for the same loop — no web server, no
-browser, no QtWebEngine. It is optional: the core install never requires
-PySide6, and `skraken gui` tells you exactly how to get it if it is missing.
+A native PySide6 desktop window for the same loop — no web server, no browser
+window to manage. It is optional: the core install never requires PySide6, and
+`skraken gui` tells you exactly how to get it if it is missing.
 
 ```bash
 scripts/install.sh                 # installs '.[dev,gui]' (includes PySide6)
@@ -244,20 +250,77 @@ GitKraken-style **commit graph** (painted lanes, merge rings, ref badges like
 **proposals** table with coloured status badges. The right pane holds the
 **New proposal** form (request with live character counter and inline
 validation, optional context files, optional *paste a unified diff* box for
-degraded mode) and the **proposal detail**: rationale, highlighted diff
-(`+` green, `-` red, `@@` cyan), Apply with *Run tests / Commit on success /
-Keep on failure* checkboxes and a confirmation dialog, Reject, Revert, and a
-collapsible test-output tail. A bottom **activity log** shows every step,
-newest first. Everything slow runs in worker threads; the window never
-freezes, and errors come back as plain `Error:` text — never tracebacks.
+degraded mode) and the **proposal detail**: rationale, Apply with *Run tests /
+Commit on success / Keep on failure* checkboxes and a confirmation dialog,
+Reject, Revert, and a collapsible test-output tail. A bottom **activity log**
+shows every step, newest first. Everything slow runs in worker threads; the
+window never freezes, and errors come back as plain `Error:` text — never
+tracebacks.
+
+### The code viewer: Monaco, offline
+
+Every place the GUI shows code — the proposal diff, a file opened from the tree,
+test output — is rendered by **Monaco**, the editor that is in VS Code, embedded
+in a `QWebEngineView` inside the same native window. The window is still a Qt
+window; there is no local web server and nothing is ever fetched.
+
+* **Vendored, pinned, hash-verified.** `scripts/vendor_monaco.py` downloads one
+  npm tarball (version pinned in the script), checks it against npm's published
+  `sha512` integrity, and commits the result under `selfkraken/gui/monaco/`.
+  The app loads it from disk with `file://`; **no CDN, no network at runtime**.
+  Re-run `python3.12 scripts/vendor_monaco.py --check` to prove what is on disk
+  is what was pinned.
+* **Nothing leaves the window.** The web view runs on an off-the-record profile
+  with no cache, no cookies and no storage, and a request interceptor drops every
+  request that is not a `file`/`qrc`/`data`/`blob` inside the vendored folder —
+  so neither Monaco nor the *contents of your repository* can open a connection
+  or read a file the app did not choose to show. Popups, clipboard access and
+  navigation away from the page are off; the page itself declares a CSP with
+  `connect-src 'none'`.
+* **Read-only.** The editor is for reviewing, not editing; it never writes a file.
+* **Diff that fits the pane.** A proposal's diff is split per file: a compact
+  strip lists the touched files with their `+N/−M` counts, and clicking one shows
+  that file's before/after — `original` is `git show HEAD:<path>`, `modified` is
+  that content with the file's own chunk applied **in a temp directory** by
+  `git apply`, so your working tree is never touched to draw a picture. Side by
+  side when the pane is wide enough, inline when it is not, with a toggle that
+  overrides the choice.
+* **Files as tabs.** Double-clicking a file in the tree opens it read-only in a
+  closable tab beside Graph / Proposals / Changes, with the lines the selected
+  proposal touches marked — numbered on the side you are actually looking at
+  (before the patch when it is still only proposed).
+* **It matches the theme.** The Monaco theme is generated from the same palette
+  tokens the Qt widgets paint with, so the editor's background, selection and
+  added/removed colours are the diff colours everywhere else.
+
+**Fallback.** If QtWebEngine cannot start, if the vendored files are missing, or
+if `SK_GUI_NO_WEBENGINE=1` is set, the GUI uses its own plain-text diff viewer
+(the same highlighting, `QPlainTextEdit`-based) and says so in one muted line —
+*plain viewer (Monaco unavailable)*. Offscreen (the test suite, and the
+screenshots below) always takes this path, because QtWebEngine cannot paint
+there; `docs/screenshots/gui-monaco.png` and `gui-file.png` are captured from a
+real display with Monaco running.
+
+Monaco Editor is MIT-licensed, version **0.57.0**, vendored in this repository —
+see `selfkraken/gui/monaco/LICENSE` and
+`selfkraken/gui/monaco/ThirdPartyNotices.txt`.
 
 Commit graph with lanes, merges and refs:
 
 ![GUI commit graph](docs/screenshots/gui-graph.png)
 
-Proposal review: highlighted diff, apply options, test result:
+Proposal review: the diff centre-stage, apply options, test result (offscreen —
+plain viewer, the fallback):
 
 ![GUI proposal detail](docs/screenshots/gui-proposal.png)
+
+The same proposal with Monaco running (captured on a real display):
+
+![GUI Monaco diff](docs/screenshots/gui-monaco.png)
+
+A file from the tree, open read-only in its own tab (Monaco, real display):
+
+![GUI Monaco file tab](docs/screenshots/gui-file.png)
 
 Empty state with guidance:
 
@@ -267,8 +330,11 @@ Light theme:
 
 ![GUI light theme](docs/screenshots/gui-light.png)
 
-Regenerate the screenshots anytime with
+Regenerate the offscreen screenshots anytime with
 `.venv/bin/python scripts/gui_screenshots.py` (offscreen Qt, throwaway data).
+The two Monaco pictures need a desktop session, because QtWebEngine cannot paint
+offscreen: `.venv/bin/python scripts/gui_monaco_shot.py`. Both grab the app's own
+window, never the screen.
 
 ### System requirements for the GUI
 
@@ -300,12 +366,20 @@ On a Wayland session Qt is automatically told to prefer the Wayland plugin;
 **CLI needs none of this**: every `skraken` command except `gui` works
 headless with no system packages, and the test suite runs Qt offscreen.
 
+The embedded editor adds no pip dependency — `QWebEngineWidgets` ships in the
+`PySide6` package itself (`PySide6-Addons`) — and no system package beyond what
+Qt already needs. If it cannot start on your machine, the GUI notices and shows
+its plain-text viewer instead of failing; set `SK_GUI_NO_WEBENGINE=1` to choose
+that viewer deliberately (and `SK_GUI_DEBUG=1` to see the editor's console
+output and why it fell back).
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
 | `Ctrl+1` | Show the Graph tab |
 | `Ctrl+2` | Show the Proposals tab |
+| `Ctrl+3` | Show the Changes tab (the proposal diff) |
 | `Ctrl+N` | New proposal (focus and clear the request form) |
 | `Ctrl+Enter` | Submit the proposal request |
 | `Ctrl+I` | Index the selected repository |
@@ -313,6 +387,7 @@ headless with no system packages, and the test suite runs Qt offscreen.
 | `F5` | Refresh everything from the database |
 | `F1` | Keyboard-shortcuts help |
 | `Arrow keys` | Navigate the graph and tables |
+| `Enter` / double-click | Open the selected file in a tab (Files tree) |
 | `Ctrl+Q` | Quit |
 
 Accessibility: every control has an accessible name, form labels use buddies
@@ -333,7 +408,10 @@ and the graph is fully keyboard-navigable.
 
 Single-user and local. No telemetry, no analytics, no ads, no accounts, no
 background services. The only outbound request is the one you trigger, to the
-model URL you configured. Your `.env` key stays on your machine.
+model URL you configured. Your `.env` key stays on your machine. The GUI's code
+editor is vendored into the package and pinned by hash — it loads from disk, is
+blocked by a request interceptor from reaching anything else, and never talks to
+a CDN.
 
 ## Scripts
 
@@ -345,6 +423,9 @@ model URL you configured. Your `.env` key stays on your machine.
 | `scripts/build.sh` | Build sdist + wheel into `dist/` |
 | `scripts/run.sh ...` | Install the built wheel into `.venv-run` and run it (default data dir) |
 | `scripts/screenshots.sh ...` | Regenerate the README screenshots (`python scripts/screenshots.py --out docs/screenshots`) |
+| `scripts/vendor_monaco.py` | Fetch, hash-verify, prune and vendor the Monaco editor into `selfkraken/gui/monaco/` (`--check` verifies what is committed) |
+| `scripts/gui_screenshots.py` | Regenerate the offscreen GUI screenshots (shows the plain-viewer fallback) |
+| `scripts/gui_monaco_shot.py` | Regenerate `gui-monaco.png` / `gui-file.png` — needs a desktop session, captures the app window only |
 
 ## Testing
 

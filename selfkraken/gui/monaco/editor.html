@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<!--
+  The selfkraken code viewer: Monaco, loaded from the vendored ./vs next to this
+  file.  No CDN, no network — the Qt side blocks every request that is not a
+  file under selfkraken/gui/monaco, so this page must work from file:// alone.
+
+  Python drives it through one function, window.skApply(payload), with the
+  payload serialised by json.dumps in selfkraken/gui/monaco_payload.py; nothing
+  here ever evaluates text it was handed.  Status is read back with
+  window.skStatus() ("booting" | "ready" | "error:<reason>").
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none';" />
+    <title>selfkraken</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+      #editor { position: absolute; inset: 0; }
+      #empty {
+        position: absolute; inset: 0; display: flex; align-items: center;
+        justify-content: center; font: 12px/1.4 sans-serif; text-align: center;
+        padding: 0 16px; box-sizing: border-box; white-space: pre-line;
+        -webkit-user-select: text; user-select: text;
+      }
+    </style>
+    <script>
+      // the AMD loader finds the vendored bundle relative to this document
+      var require = { paths: { vs: 'vs' } };
+    </script>
+    <script src="vs/loader.js"></script>
+    <script>
+      'use strict';
+
+      var state = {
+        status: 'booting',
+        mode: '',            // 'diff' | 'file' | 'text' | ''
+        theme: '',
+        sideBySide: null,    // the layout the current diff editor was built for
+        editor: null,
+        diff: null,
+        models: [],
+        decorations: null,
+        tokens: null
+      };
+
+      function fail(message) {
+        state.status = 'error:' + String(message).slice(0, 300);
+      }
+
+      window.skStatus = function () { return state.status; };
+
+      // debug: what the page thinks it is showing (SK_GUI_DEBUG probes use it)
+      window.skProbe = function () {
+        return JSON.stringify({
+          status: state.status, mode: state.mode, hasDiff: !!state.diff,
+          hasEditor: !!state.editor, models: state.models.length,
+          pending: !!state.pending, monaco: !!window.monaco,
+          theme: state.theme, host: (function () {
+            var h = document.getElementById('editor');
+            return h ? h.style.display + '/' + h.getBoundingClientRect().width : 'none';
+          })()
+        });
+      };
+
+      function host() {
+        return document.getElementById('editor');
+      }
+
+      function baseOptions(tokens) {
+        // the compact GitKraken-ish profile: no minimap, no chrome, tight lines
+        return {
+          readOnly: true,
+          automaticLayout: true,
+          minimap: { enabled: false },
+          fontSize: tokens.fontSize || 12,
+          lineHeight: tokens.lineHeight || 18,
+          fontFamily: (tokens.fontFamily || 'monospace') + ', monospace',
+          padding: { top: 4, bottom: 4 },
+          scrollBeyondLastLine: false,
+          renderLineHighlight: 'none',
+          folding: true,
+          glyphMargin: false,
+          lineNumbersMinChars: 3,
+          overviewRulerLanes: 0,
+          hideCursorInOverviewRuler: true,
+          overviewRulerBorder: false,
+          scrollbarVerticalScrollbarVisibility: 'auto',
+          contextmenu: false,
+          dragAndDrop: false,
+          wordBasedSuggestions: 'off',
+          links: false,
+          colorDecorators: false,
+          matchesBrackets: 'never',
+          renderWhitespace: 'none',
+          renderControlCharacters: false,
+          smoothScrolling: false,
+          quickSuggestions: { other: false, comments: false, strings: false },
+          accessibilitySupport: 'auto'
+        };
+      }
+
+      function defineTheme(tokens) {
+        var palette = {
+          'editor.background': tokens.background,
+          'editor.foreground': tokens.foreground,
+          'editorLineNumber.foreground': tokens.gutterForeground,
+          'editorGutter.background': tokens.background,
+          'editor.selectionBackground': tokens.selectionBackground,
+          'editor.lineHighlightBackground': tokens.lineHighlight,
+          'editor.lineHighlightBorder': '#00000000',
+          'editorIndentGuide.background1': tokens.border,
+          'editorIndentGuide.activeBackground1': tokens.muted,
+          'editorWidget.background': tokens.background,
+          'editorWidget.border': tokens.border,
+          'scrollbarSlider.background': hex8(tokens.border, '80'),
+          'diffEditor.insertedTextBackground': hex8(tokens.addedBackground, '66'),
+          'diffEditor.removedTextBackground': hex8(tokens.removedBackground, '66'),
+          'diffEditor.insertedLineBackground': tokens.addedBackground,
+          'diffEditor.removedLineBackground': tokens.removedBackground,
+          'diffEditorGutter.insertedLineBackground': tokens.addedBackground,
+          'diffEditorGutter.removedLineBackground': tokens.removedBackground,
+          'diffEditorOverview.insertedForeground': tokens.addedForeground,
+          'diffEditorOverview.removedForeground': tokens.removedForeground,
+          'diffEditor.diagonalFill': tokens.border
+        };
+        // Monaco parses every value as a colour string: an undefined token would
+        // throw inside the library, so only complete entries are passed on
+        var colors = {};
+        Object.keys(palette).forEach(function (key) {
+          var value = palette[key];
+          if (typeof value === 'string' && /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(value)) {
+            colors[key] = value;
+          }
+        });
+        var name = tokens.name || 'selfkraken-dark';
+        monaco.editor.defineTheme(name, {
+          base: String(tokens.base || '').indexOf('light') >= 0 ? 'vs' : 'vs-dark',
+          inherit: true,
+          rules: [],
+          colors: colors
+        });
+        state.theme = name;
+      }
+
+      function hex8(hex, suffix) {
+        return typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex)
+          ? hex + suffix : hex;
+      }
+
+      function detachModels() {
+        // Monaco complains ("TextModel got disposed before DiffEditorWidget
+        // model got reset") if a model dies while an editor still points at it:
+        // every editor lets go first, and the old models go afterwards.
+        var previous = state.models;
+        state.models = [];
+        if (state.diff) { try { state.diff.setModel(null); } catch (e) {} }
+        if (state.editor) { try { state.editor.setModel(null); } catch (e) {} }
+        return previous;
+      }
+
+      function disposeModels() {
+        disposeAll(detachModels());
+      }
+
+      function disposeAll(models) {
+        // swap first, then kill: a model still referenced by an editor is an
+        // error inside Monaco, and the error would surface as a blank pane
+        for (var i = 0; i < (models || []).length; i++) {
+          try { models[i].dispose(); } catch (e) { /* already gone */ }
+        }
+        if (state.decorations) {
+          try { state.decorations.clear(); } catch (e) { /* editor replaced */ }
+        }
+      }
+
+      function showEmpty(text, tokens) {
+        setMode('');
+        var box = document.getElementById('empty');
+        box.style.display = 'flex';
+        box.style.color = tokens.muted;
+        box.style.background = tokens.background;
+        box.textContent = text;
+      }
+
+      function setMode(mode) {
+        state.mode = mode;
+        var box = document.getElementById('empty');
+        if (mode === '') {
+          box.style.display = 'flex';
+          return;
+        }
+        box.style.display = 'none';
+        if (mode === 'diff' && state.editor) {
+          state.editor.getModifiedEditor().updateOptions({ readOnly: true });
+        }
+      }
+
+      function applyTokens(payload) {
+        var tokens = payload.tokens || state.tokens;
+        if (!tokens) return null;
+        if (tokens.name !== state.theme) defineTheme(tokens);
+        monaco.editor.setTheme(tokens.name);
+        state.tokens = tokens;
+        document.body.style.background = tokens.background;
+        return tokens;
+      }
+
+      function renderDiff(payload, tokens) {
+        var side = !!payload.sideBySide;
+        // Monaco's updateOptions() does not reflow renderSideBySide reliably
+        // here (the panes kept their old widths on the real display), and a
+        // layout toggle is a rare, cheap event: rebuild the editor when the
+        // mode actually changes.
+        if (state.diff && state.sideBySide !== side) {
+          var stale = detachModels();
+          try { state.diff.dispose(); } catch (e) { /* already gone */ }
+          state.diff = null;
+          disposeAll(stale);
+        }
+        if (!state.diff) {
+          state.diff = monaco.editor.createDiffEditor(host(), Object.assign(
+            baseOptions(tokens),
+            {
+              renderSideBySide: side,
+              // Monaco would otherwise fall back to the inline view below 900px
+              // and silently ignore the user's choice: the Qt side decides when
+              // two columns make sense (see SIDE_BY_SIDE_MIN_WIDTH).
+              useInlineViewWhenSpaceIsLimited: false,
+              renderSideBySideInlineBreakpoint: 0,
+              renderOverviewRuler: true,
+              hideUnchangedRegions: { enabled: true, contextLineCount: 3, minimumLineCount: 3 },
+              diffAlgorithm: 'advanced'
+            }
+          ));
+          state.sideBySide = side;
+        }
+        setMode('diff');
+        host().style.display = 'block';
+        var previous = state.models;
+        var original = monaco.editor.createModel(payload.original || '', payload.language);
+        var modified = monaco.editor.createModel(payload.modified || '', payload.language);
+        state.models = [original, modified];
+        state.diff.setModel({ original: original, modified: modified });
+        disposeAll(previous);  // the editor is on the new pair before the old dies
+        state.diff.layout();
+      }
+
+      function renderText(payload, tokens, options) {
+        if (!state.editor) {
+          state.editor = monaco.editor.create(host(), Object.assign(
+            baseOptions(tokens), options || {}
+          ));
+        }
+        setMode(payload.kind);
+        host().style.display = 'block';
+        var previous = state.models;
+        var model = monaco.editor.createModel(payload.text || '', payload.language);
+        state.models = [model];
+        state.editor.setModel(model);
+        disposeAll(previous);
+        if (payload.kind === 'file' && payload.highlightLines && payload.highlightLines.length) {
+          var range = new monaco.Range(1, 1, 1, 1);
+          var specs = payload.highlightLines.map(function (line) {
+            return { range: new monaco.Range(line, 1, line, 1),
+                     options: {
+                       isWholeLine: true,
+                       linesDecorationsClassName: '',
+                       className: 'sk-touched',
+                       overviewRuler: { color: tokens.addedForeground,
+                                        position: monaco.editor.OverviewRulerLane.Left }
+                     } };
+          });
+          if (!state.decorations) {
+            state.decorations = state.editor.createDecorationsCollection(specs);
+          } else {
+            state.decorations.setDecorations(specs);
+          }
+          injectHighlightRule(tokens);
+        } else if (state.decorations) {
+          state.decorations.setDecorations([]);
+        }
+        state.editor.layout();
+      }
+
+      function injectHighlightRule(tokens) {
+        if (document.getElementById('sk-touched')) return;
+        var style = document.createElement('style');
+        style.id = 'sk-touched';
+        style.textContent = '.sk-touched{background:' + cssColor(tokens.selectionBackground) + ';}';
+        document.head.appendChild(style);
+      }
+
+      function cssColor(hex) {
+        // Monaco tokens are #rrggbb; CSS wants rgb()/rgba() so the mark stays subtle
+        var value = String(hex || '').replace('#', '');
+        if (value.length !== 6) return 'transparent';
+        var r = parseInt(value.slice(0, 2), 16);
+        var g = parseInt(value.slice(2, 4), 16);
+        var b = parseInt(value.slice(4, 6), 16);
+        return 'rgba(' + r + ',' + g + ',' + b + ',0.35)';
+      }
+
+      window.skApply = function (payload) {
+        try {
+          if (!payload || typeof payload !== 'object') return;
+          if (!window.monaco) { state.pending = payload; return; }
+          if (payload.kind === 'clear') {
+            disposeModels();
+            if (state.diff) { state.diff.setModel(null); }
+            if (state.editor) { state.editor.setModel(null); }
+            showEmpty('Nothing to show.', payload.tokens || state.tokens || FALLBACK_TOKENS);
+            return;
+          }
+          var tokens = payload.tokens || state.tokens || FALLBACK_TOKENS;
+          applyTokens({ tokens: tokens });
+          if (payload.kind === 'theme') return;  // recolour only, keep the text
+          if (payload.kind === 'diff') {
+            renderDiff(payload, tokens);
+          } else {
+            if (state.diff) { state.diff.setModel(null); }
+            renderText(payload, tokens);
+          }
+        } catch (error) {
+          fail(error && error.stack ? error.stack : (error && error.message) || error);
+        }
+      };
+
+      // the smallest complete token set: used before Python sends the real
+      // palette, so the page can render something readable on its own
+      var FALLBACK_TOKENS = {
+        name: 'selfkraken-fallback', base: 'dark', background: '#161b22',
+        foreground: '#e6edf7', muted: '#9aa6b5', border: '#303a46',
+        gutter: '#161b22', gutterForeground: '#9aa6b5',
+        selectionBackground: '#2a4d7a', selectionForeground: '#f0f6ff',
+        lineHighlight: '#1a212a', addedBackground: '#0d2818',
+        addedForeground: '#4ac26b', removedBackground: '#2d0e0f',
+        removedForeground: '#f85149', hunk: '#54a6ff',
+        fontFamily: 'monospace', fontSize: 12, lineHeight: 18
+      };
+
+      window.addEventListener('error', function (event) {
+        fail((event && event.message) || 'script error');
+      });
+
+      require(['vs/editor/editor.main'], function () {
+        try {
+          defineTheme(FALLBACK_TOKENS);
+          monaco.editor.setTheme(FALLBACK_TOKENS.name);
+          showEmpty('Nothing to show.', FALLBACK_TOKENS);
+          state.status = 'ready';
+          if (state.pending) {
+            var queued = state.pending;
+            state.pending = null;
+            window.skApply(queued);
+          }
+        } catch (error) {
+          fail(error && error.message ? error.message : error);
+        }
+      }, function (error) {
+        fail('monaco failed to load: ' + (error && error.requireType ? error.requireType : error));
+      });
+    </script>
+  </head>
+  <body>
+    <div id="editor" style="display:none"></div>
+    <div id="empty">Loading editor…</div>
+  </body>
+</html>

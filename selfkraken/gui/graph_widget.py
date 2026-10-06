@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Sequence
 
-from PySide6.QtCore import QModelIndex, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -27,7 +27,12 @@ from PySide6.QtWidgets import (
 
 from selfkraken.gitops import run_git
 from selfkraken.graph import Branch, GraphRow
-from selfkraken.gui.models import TIMESTAMP_SAMPLE, GraphTableModel, sized_column_width
+from selfkraken.gui.models import (
+    TIMESTAMP_SAMPLE,
+    GraphTableModel,
+    date_column_width,
+    sized_column_width,
+)
 from selfkraken.gui.theme import (
     BADGE_GAP,
     BADGE_H_PAD,
@@ -49,9 +54,16 @@ LANE_LEFT_PAD = SPACE_6  # lane block inset, mirrored on the right
 DOT_RADIUS = 4.0
 LINE_WIDTH = 2.0
 BADGE_FONT_PT = META_PT
-REFS_COLUMN_MAX = 260  # the widest badge run we will make room for
+REFS_COLUMN_MAX = 260  # the widest badge run we will ever make room for
+#: …but the badge column may never take more than this share of the viewport,
+#: nor more than this many pixels: Subject is the column that absorbs whatever
+#: the others leave, and at 1280px a 180px badge run that only one row in thirty
+#: needs was leaving the subject about ten characters.  Refs that do not fit are
+#: counted with a "+N" chip by the badge painter, so nothing is hidden silently.
+REFS_VIEWPORT_SHARE = 0.22
+REFS_COLUMN_HARD_MAX = 150
 #: the author column may always elide further than this (tooltip has the rest)
-AUTHOR_COLUMN_MAX = 110  # names elide; the tooltip has the whole one
+AUTHOR_COLUMN_MAX = 120  # names elide; the tooltip has the whole one
 
 
 def header_font() -> QFont:
@@ -237,15 +249,19 @@ class GraphDelegate(QStyledItemDelegate):
             return QSize(self.refs_width(), ROW_HEIGHT)
         return QSize(super().sizeHint(option, index).width(), ROW_HEIGHT)
 
-    def refs_width(self) -> int:
-        """Refs column: the widest badge run, capped, never below its header."""
+    def refs_width(self, rows: Optional[Sequence[int]] = None) -> int:
+        """Refs column: the widest badge run, capped, never below its header.
+
+        ``rows`` limits the measurement to the rows actually on screen, which is
+        what the column should be sized for: the global widest run (a tag plus a
+        long branch name on one row) left ~60px of dead space on every other row.
+        """
         run = self._table_model.refs_column_width(
-            self._badge_metrics, BADGE_GAP, BADGE_H_PAD
+            self._badge_metrics, BADGE_GAP, BADGE_H_PAD, rows=rows
         )
         header = QFontMetrics(header_font()).horizontalAdvance(
             self._table_model.COLUMNS[1]
         )
-        # exactly as wide as the widest badge run that is actually present
         return min(max(run + 2 * CELL_PADDING, header + 2 * CELL_PADDING), REFS_COLUMN_MAX)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:  # noqa: D102
@@ -310,6 +326,10 @@ class GraphView(QTableView):
         header.setSectionsMovable(False)
         header.setMinimumSectionSize(2 * SPACE_6)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        #: the column widths are computed from the viewport; a manual drag wins
+        self._auto_sizing = False
+        self._user_sized = False
+        header.sectionResized.connect(self._on_section_resized)
 
         self.selectionModel().selectionChanged.connect(self._emit_selection)
         self.setAccessibleName("Commit graph")
@@ -317,7 +337,19 @@ class GraphView(QTableView):
             "Repository commit history. Arrow keys move between commits."
         )
         self.setToolTip("Arrow keys navigate; Enter shows the commit details.")
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
         self._layout_columns()
+
+    def _on_scroll_changed(self, _value: int) -> None:
+        self._reflow_refs_column()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt name
+        super().showEvent(event)
+        # the first layout ran before the window had a real size and before any
+        # row was on screen: re-measure once both are true
+        if not getattr(self, "_shown_once", False):
+            self._shown_once = True
+            QTimer.singleShot(0, self._layout_columns)
 
     # -- data --------------------------------------------------------------
     def set_rows(self, rows: list[GraphRow], branches: Sequence[Branch]) -> None:
@@ -342,31 +374,108 @@ class GraphView(QTableView):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.setColumnWidth(
-            0,
-            self.table_model.lane_column_width(
-                LANE_WIDTH, LANE_LEFT_PAD, graph_column_minimum()
-            ),
+        # Date is a Fixed width measured from the font, never ResizeToContents:
+        # the content mode re-measures on every row and let the column drift a
+        # few px wider than "YYYY-MM-DD HH:MM" needs, which came out of Subject
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self._auto_sizing = True
+        try:
+            self.setColumnWidth(
+                0,
+                self.table_model.lane_column_width(
+                    LANE_WIDTH, LANE_LEFT_PAD, graph_column_minimum()
+                ),
+            )
+            # Refs takes only what its badges need — and never so much that
+            # Subject, the column carrying the information, starves. The badge
+            # delegate paints a "+N" chip for refs that do not fit, so shrinking
+            # this column never hides a ref silently.
+            share = max(
+                graph_column_minimum(),
+                int(self.viewport().width() * REFS_VIEWPORT_SHARE),
+            )
+            self.setColumnWidth(
+                1,
+                min(
+                    self._refs_width_for_visible_rows(),
+                    share,
+                    REFS_COLUMN_HARD_MAX,
+                ),
+            )
+            # Author and Date are measured from the font the *view* carries, not
+            # from the smaller tier the model offers: the view font is the widest
+            # a cell can ever be painted in, so the date always fits
+            # "YYYY-MM-DD HH:MM" (measuring with the meta tier elided its time on
+            # a desktop whose UI font is larger than the offscreen one).  The
+            # author column is capped and elides on purpose — tooltip has the rest.
+            authors = [row.commit.author for row in self.table_model.rows()] or ["Author"]
+            widest_author = max(authors, key=len)
+            self.setColumnWidth(
+                3,
+                min(
+                    sized_column_width(self, widest_author, self.table_model.COLUMNS[3]),
+                    AUTHOR_COLUMN_MAX,
+                ),
+            )
+            self.setColumnWidth(
+                4,
+                date_column_width(self, TIMESTAMP_SAMPLE, self.table_model.COLUMNS[4]),
+            )
+        finally:
+            self._auto_sizing = False
+
+    def _visible_rows(self) -> list[int]:
+        """Row numbers currently on screen (the ones the column must serve)."""
+        area = self.viewport().rect()
+        if area.height() <= 0 or self.table_model.rowCount() == 0:
+            return []
+        first = self.rowAt(area.top())
+        last = self.rowAt(area.bottom())
+        if first < 0:
+            first = 0
+        if last < 0:
+            last = self.table_model.rowCount() - 1
+        return list(range(max(first, 0), min(last, self.table_model.rowCount() - 1) + 1))
+
+    def _refs_width_for_visible_rows(self) -> int:
+        """Badge column width for the rows on screen, rounded up to 8px steps.
+
+        Sizing to the widest run *in view* is what removes the dead space; the
+        rounding keeps the column from twitching by single pixels while scrolling,
+        and a run that still does not fit is counted with a "+N" chip.
+        """
+        rows = self._visible_rows()
+        width = self.graph_delegate.refs_width(rows or None)
+        if not rows and self.viewport().height() <= 0:
+            width = self.graph_delegate.refs_width()  # not shown yet: all rows
+        return ((width + 7) // 8) * 8
+
+    def _reflow_refs_column(self) -> None:
+        """Re-measure just the badge column (scrolling must not resize the rest)."""
+        if self._user_sized:
+            return
+        share = max(
+            graph_column_minimum(),
+            int(self.viewport().width() * REFS_VIEWPORT_SHARE),
         )
-        # Refs takes only what its badges need; Subject gets all the stretch
-        self.setColumnWidth(1, self.graph_delegate.refs_width())
-        # Author and Date are measured from the real font: the date column always
-        # fits "YYYY-MM-DD HH:MM", the author column fits the longest author in
-        # the history up to a cap (longer names elide, with the tooltip).
-        authors = [row.commit.author for row in self.table_model.rows()] or ["Author"]
-        widest_author = max(authors, key=len)
-        self.setColumnWidth(
-            3,
-            min(
-                sized_column_width(self, widest_author, self.table_model.COLUMNS[3]),
-                AUTHOR_COLUMN_MAX,
-            ),
-        )
-        self.setColumnWidth(
-            4,
-            sized_column_width(self, TIMESTAMP_SAMPLE, self.table_model.COLUMNS[4]),
-        )
+        wanted = min(self._refs_width_for_visible_rows(), share, REFS_COLUMN_HARD_MAX)
+        if wanted != self.columnWidth(1):
+            self._auto_sizing = True
+            try:
+                self.setColumnWidth(1, wanted)
+            finally:
+                self._auto_sizing = False
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt name
+        super().resizeEvent(event)
+        # the badge column's share of the viewport moved with the window; once
+        # the user has dragged a column themselves, their width is theirs
+        if not getattr(self, "_user_sized", False):
+            self._layout_columns()
+
+    def _on_section_resized(self, _index: int, _old: int, _new: int) -> None:
+        if not getattr(self, "_auto_sizing", False):
+            self._user_sized = True
 
     def _emit_selection(self, _selected, _deselected) -> None:
         rows = self.selectionModel().selectedRows()

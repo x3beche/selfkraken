@@ -45,10 +45,20 @@ def _display_date(iso: str) -> str:
     return local_time(iso)
 
 
-#: the widest string :func:`local_time` can ever produce ("YYYY-MM-DD HH:MM")
-TIMESTAMP_SAMPLE: Final[str] = "0000-00-00 00:00"
+#: the widest string :func:`local_time` can ever produce ("YYYY-MM-DD HH:MM");
+#: digits are all the same width, so this is the budget every real date fits in
+TIMESTAMP_SAMPLE: Final[str] = "8888-88-88 88:88"
 #: widest id-like value, so a column never truncates a real one
 ID_SAMPLE: Final[str] = "999999"
+
+
+def meta_font():
+    """The secondary type tier: author and date are metadata, not the subject."""
+    from selfkraken.gui.theme import META_PT, ui_family
+
+    font = QFont(ui_family())
+    font.setPointSizeF(META_PT)
+    return font
 
 
 def sized_column_width(
@@ -63,15 +73,33 @@ def sized_column_width(
     Measured with the view's own font — the one the cells both paint and elide
     in — plus the stylesheet's 6px cell padding.  Nothing is guessed from
     pixels, so a wider system font widens the column instead of truncating it.
-    ``column`` is kept for callers that want per-column roles later.
     """
-    # the view's own font is what the cells both paint and elide in, so it is
-    # the only font a column may be measured with
+    metrics = QFontMetrics(view.font())
     width = max(
-        QFontMetrics(view.font()).horizontalAdvance(value_text),
-        QFontMetrics(view.font()).horizontalAdvance(header_text),
+        metrics.horizontalAdvance(value_text),
+        metrics.horizontalAdvance(header_text),
     )
     return width + 2 * CELL_PADDING + SPACE_4 + extra
+
+
+def date_column_width(view, value_text: str, header_text: str) -> int:
+    """A date column that can never elide, whichever font it is painted in.
+
+    The cell hands out the meta tier while the view itself carries the body font,
+    and elision is computed from the option font — so the only safe budget is the
+    *wider* of the two, plus the cell padding and a pixel of rounding slack.
+    Measured on the widest string :func:`~selfkraken.gui.models.local_time` can
+    produce ("8888-88-88 88:88"), not on the sample that happens to be on screen.
+    """
+    metrics_view = QFontMetrics(view.font())
+    metrics_meta = QFontMetrics(meta_font())
+    width = max(
+        metrics_view.horizontalAdvance(value_text),
+        metrics_meta.horizontalAdvance(value_text),
+        metrics_view.horizontalAdvance(header_text),
+        metrics_meta.horizontalAdvance(header_text),
+    )
+    return width + 2 * CELL_PADDING + SPACE_4 + 2
 
 
 def _one_line(text: str, limit: int = 160) -> str:
@@ -134,6 +162,8 @@ class GraphTableModel(QAbstractTableModel):
             return None
         if role == Qt.TextAlignmentRole and index.column() == 4:
             return int(Qt.AlignLeft | Qt.AlignVCenter)
+        if role == Qt.FontRole and index.column() in (3, 4):
+            return meta_font()
         if role == Qt.ForegroundRole and index.column() in (3, 4):
             return QColor(self._palette.muted)
         return None
@@ -236,11 +266,16 @@ class GraphTableModel(QAbstractTableModel):
         return max(minimum, left_pad * 2 + lane_width * max(self.max_lanes, 1))
 
     def refs_column_width(
-        self, metrics, badge_gap: int, badge_h_pad: int
+        self, metrics, badge_gap: int, badge_h_pad: int, rows=None
     ) -> int:
-        """Pixels needed by the widest badge run in the Refs column."""
+        """Pixels needed by the widest badge run in the Refs column.
+
+        ``rows`` (an iterable of row numbers) restricts the measurement; the
+        default ``None`` means every row.
+        """
+        wanted = range(len(self._rows)) if rows is None else rows
         widest = 0
-        for row in range(len(self._rows)):
+        for row in wanted:
             badges = self.badges_for(row)
             if not badges:
                 continue

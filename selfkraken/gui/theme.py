@@ -62,9 +62,11 @@ DOCK_TITLE_INSET: Final[int] = 4
 STATUS_BAR_HEIGHT: Final[int] = 20
 ACTIVITY_LOG_HEIGHT: Final[int] = 140
 
-#: default dock widths as a share of the window: the graph keeps the rest
+#: default dock widths as a share of the window: the graph keeps the rest.
+#: The diff lives in the centre now, so the review column needs less and the
+#: code editor more (a side-by-side diff wants ~700px to be readable).
 LEFT_DOCK_RATIO: Final[float] = 0.16
-REVIEW_DOCK_RATIO: Final[float] = 0.34
+REVIEW_DOCK_RATIO: Final[float] = 0.28
 CELL_PADDING: Final[int] = SPACE_6  #: tables: 6px each side, header text too
 SPLITTER_HIT: Final[int] = 4  #: 1px line inside a 4px grab area
 SCROLLBAR_WIDTH: Final[int] = 10  #: thin bars: the content, not the chrome, is UI
@@ -460,6 +462,18 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     }}
     QTabBar::tab:selected {{ background: {p.base}; color: {p.text}; }}
     QTabBar::tab:hover:!selected {{ color: {p.text}; }}
+    /* the close box on a file tab: a quiet glyph in the tab's own colour, never
+       a filled red button — it sits next to text, not in a dialog title bar */
+    QTabBar QToolButton#tabClose {{
+        background: transparent; border: none;
+        color: {p.muted}; font-size: {META_PT:g}pt;
+        padding: 0px; margin-left: {SPACE_2}px; margin-right: {SPACE_2}px;
+        border-radius: {BADGE_RADIUS}px;
+    }}
+    QTabBar QToolButton#tabClose:hover {{
+        color: {p.text}; background: {p.selection_bg};
+    }}
+    QTabBar QToolButton#tabClose:pressed {{ background: {p.border}; color: {p.text}; }}
 
     /* ------------------------------------------------------ item views */
     QTreeView, QListView, QTableView, QColumnView {{

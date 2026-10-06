@@ -8,8 +8,12 @@ applies one manual proposal (tests + commit) and leaves a second proposal in
 
   gui-empty.png      fresh data dir, guidance empty state
   gui-graph.png      commit graph tab (dark theme)
-  gui-proposal.png   proposal detail with diff + test output
+  gui-proposal.png   Changes tab (the proposal diff) + review pane + test output
   gui-light.png      commit graph tab (light theme)
+
+Offscreen QtWebEngine cannot paint, so the diff here is the plain viewer the GUI
+falls back to; the Monaco rendering is captured on a real display by
+scripts/gui_monaco_shot.py into gui-monaco.png / gui-file.png.
 """
 
 from __future__ import annotations
@@ -165,21 +169,23 @@ def main() -> int:
         app.processEvents()
         _save(win, out / "gui-graph.png")
 
-        # -- 4. proposal detail: applied proposal with diff + test output ----
-        win.tabs.setCurrentIndex(1)
+        # -- 4. proposal detail: the diff centre-stage + the review pane ------
+        # Offscreen QtWebEngine cannot paint, so this shows the plain viewer the
+        # GUI falls back to; docs/screenshots/gui-monaco.png is the same state
+        # captured on a real display with Monaco running.
         win.commit_group.setVisible(False)
         win.select_proposal(applied_id)
         win.tests_toggle.setChecked(True)
         win.files_view.expandAll()
+        win.tabs.setCurrentIndex(2)  # Changes
         app.processEvents()
-        diff_scroll = win.diff_view.verticalScrollBar()
-        diff_scroll.setValue(int(diff_scroll.maximum() * 0.4))  # @@ + context + adds
         scrollbar = win.right_scroll.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
         app.processEvents()
         _save(win, out / "gui-proposal.png")
         scrollbar.setValue(0)
         win.files_view.collapseAll()
+        win.tabs.setCurrentIndex(1)
 
         # -- 5. light theme ----------------------------------------------------
         apply_theme(app, LIGHT)
