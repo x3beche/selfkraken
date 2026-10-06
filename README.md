@@ -22,8 +22,10 @@ It is **not**:
   gives you, with the same limits it has.
 - **not large-context infrastructure.** It sends at most `SK_MAX_CONTEXT_CHARS`
   of repo snippets per request. There is no embedding pipeline, no RAG platform.
-- **not an IDE.** No GUI, no plugin, no polish, no sub-100ms autocomplete loop.
-  It is a CLI you run when you want a diff and a record.
+- **not an IDE.** No editor, no plugins, no sub-100ms autocomplete loop.
+  There is a native desktop GUI (`skraken gui`, see below) for the core loop —
+  review, apply, test, keep or roll back — but you still type your git
+  commands elsewhere.
 
 ## Quick start
 
@@ -138,6 +140,7 @@ printed, logged, or stored in the database.
 | `skraken log [--limit N]` | Audit log: every register/index/propose/apply/test/rollback/commit/reject/revert |
 | `skraken export FILE` / `import FILE` | JSON portability (index not included; rebuild with `index`) |
 | `skraken sample load` / `sample remove` | Labelled demo repo and proposal |
+| `skraken gui [--theme auto\|dark\|light]` | Open the native Qt desktop window (needs the `gui` extra — see *Desktop GUI (Qt)*) |
 | `skraken doctor` | Environment check: data path, DB, git, model mode |
 
 Repo commands accept `--repo PATH` (default: the current directory, resolved to
@@ -192,6 +195,74 @@ so development data stays in the repo folder and is gitignored.
 dir) and one proposal, both labelled `[SAMPLE]`. Nothing of yours is touched.
 Remove everything with `skraken sample remove`.
 
+## Desktop GUI (Qt)
+
+A native PySide6 desktop window for the same loop — no web server, no
+browser, no QtWebEngine. It is optional: the core install never requires
+PySide6, and `skraken gui` tells you exactly how to get it if it is missing.
+
+```bash
+scripts/install.sh                 # installs '.[dev,gui]' (includes PySide6)
+# or:  pip install -e '.[gui]'
+.venv/bin/skraken gui              # dark or light, follows the system theme
+.venv/bin/skraken gui --theme light
+```
+
+What you get: a repo selector, **Add Repo** (folder picker + test command),
+**Index**, **Run Tests**, **Export/Import**, clearly labelled **[SAMPLE]**
+demo data, and a model status label that explains degraded mode when no
+`SK_LLM_BASE_URL` / `SK_LLM_MODEL` is configured. The center is a
+GitKraken-style **commit graph** (painted lanes, merge rings, ref badges like
+`HEAD`, `main ↑2`, `tag: v0.1.0`, `feature/login ⇄ origin`) and a
+**proposals** table with coloured status badges. The right pane holds the
+**New proposal** form (request with live character counter and inline
+validation, optional context files, optional *paste a unified diff* box for
+degraded mode) and the **proposal detail**: rationale, highlighted diff
+(`+` green, `-` red, `@@` cyan), Apply with *Run tests / Commit on success /
+Keep on failure* checkboxes and a confirmation dialog, Reject, Revert, and a
+collapsible test-output tail. A bottom **activity log** shows every step,
+newest first. Everything slow runs in worker threads; the window never
+freezes, and errors come back as plain `Error:` text — never tracebacks.
+
+Commit graph with lanes, merges and refs:
+
+![GUI commit graph](docs/screenshots/gui-graph.png)
+
+Proposal review: highlighted diff, apply options, test result:
+
+![GUI proposal detail](docs/screenshots/gui-proposal.png)
+
+Empty state with guidance:
+
+![GUI empty state](docs/screenshots/gui-empty.png)
+
+Light theme:
+
+![GUI light theme](docs/screenshots/gui-light.png)
+
+Regenerate the screenshots anytime with
+`.venv/bin/python scripts/gui_screenshots.py` (offscreen Qt, throwaway data).
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+1` | Show the Graph tab |
+| `Ctrl+2` | Show the Proposals tab |
+| `Ctrl+N` | New proposal (focus and clear the request form) |
+| `Ctrl+Enter` | Submit the proposal request |
+| `Ctrl+I` | Index the selected repository |
+| `Ctrl+T` | Run the repository's tests |
+| `F5` | Refresh everything from the database |
+| `F1` | Keyboard-shortcuts help |
+| `Arrow keys` | Navigate the graph and tables |
+| `Ctrl+Q` | Quit |
+
+Accessibility: every control has an accessible name, form labels use buddies
+and mnemonics, status is always a text label (`OK:`, `Error:`, `PASSED`,
+`✎ changed`) and never colour alone, both palettes are WCAG-AA contrast,
+and the graph is fully keyboard-navigable.
+
 ## Accessibility
 
 - Keyboard-only by design — it is a CLI.
@@ -211,7 +282,7 @@ model URL you configured. Your `.env` key stays on your machine.
 
 | Script | Purpose |
 |---|---|
-| `scripts/install.sh` | Create `.venv` (python3.12), install `.[dev]`, make `.env` (600) |
+| `scripts/install.sh` | Create `.venv` (python3.12), install `.[dev,gui]`, make `.env` (600) |
 | `scripts/dev.sh ...` | Dev mode: `SK_DATA_DIR=./.data`, runs `doctor` then passes args to `skraken` |
 | `scripts/test.sh ...` | Run pytest in `.venv` |
 | `scripts/build.sh` | Build sdist + wheel into `dist/` |
@@ -242,6 +313,7 @@ scripts/test.sh            # everything
   history (if you used `--commit`, the commit stays; revert makes an inverse
   change to undo its effect).
 - One model at a time, one endpoint, configured by environment variables.
-- No merge-conflict UI, no rebase UI, no GUI at all.
+- No merge-conflict UI, no rebase UI — the GUI covers the core loop, not all
+  of git.
 - Context is truncated at `SK_MAX_CONTEXT_CHARS`; big refactors across many
   files will not fit in one request.

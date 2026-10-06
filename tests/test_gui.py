@@ -1,0 +1,374 @@
+"""Tests for the Qt desktop GUI (PySide6, offscreen platform).
+
+No pytest-qt: one plain QApplication fixture, ``QT_QPA_PLATFORM=offscreen``
+and a temp ``SK_DATA_DIR`` per test.  ``MainWindow(run_jobs_inline=True)``
+makes every background job synchronous, so the full loop is testable without
+event-loop timing.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+pytest.importorskip("PySide6")
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextDocument  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+
+from selfkraken import workflow  # noqa: E402
+from selfkraken.config import Settings, load_settings  # noqa: E402
+from selfkraken.db import Store  # noqa: E402
+from selfkraken.graph import layout, list_branches, read_commits  # noqa: E402
+
+from selfkraken.gui.diff_view import DiffHighlighter  # noqa: E402
+from selfkraken.gui.models import GraphTableModel  # noqa: E402
+from selfkraken.gui.theme import DARK, LIGHT, resolve  # noqa: E402
+
+from fixtures_git import make_multibranch_repo  # noqa: E402
+
+
+# --------------------------------------------------------------------------- #
+# fixtures
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="session")
+def qapp() -> QApplication:
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    return app
+
+
+@pytest.fixture
+def gui_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Settings:
+    """Temp data dir for both the UI store and the workers' load_settings()."""
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SK_DATA_DIR", str(data_dir))
+    for variable in ("SK_LLM_BASE_URL", "SK_LLM_API_KEY", "SK_LLM_MODEL"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("SK_TEST_TIMEOUT", "120")
+    return load_settings(env={**os.environ, "SK_DATA_DIR": str(data_dir)}, load_dotenv_file=False)
+
+
+@pytest.fixture
+def no_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never block on a modal QMessageBox in offscreen tests."""
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        QMessageBox, "critical",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+        raising=False,
+    )
+
+
+@pytest.fixture
+def window(qapp, gui_settings, no_dialogs):
+    from selfkraken.gui.app import MainWindow
+
+    win = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    yield win
+    win.close()
+
+
+# --------------------------------------------------------------------------- #
+# construction + empty state
+# --------------------------------------------------------------------------- #
+def test_main_window_constructs_with_empty_db_and_shows_empty_state(window) -> None:
+    assert window.repo_combo.count() == 0
+    assert window.graph_stack.currentIndex() == 0  # guidance page
+    assert window.proposals_stack.currentIndex() == 0
+    texts = [
+        label.text()
+        for label in window.graph_guidance.findChildren(type(window.status_label))
+    ]
+    assert any("No repositories yet" in text for text in texts)
+    assert "Degraded mode" in window.model_status.text()  # no model configured
+    assert window.apply_button.isEnabled() is False
+    assert window.submit_button.isEnabled() is False  # empty request is invalid
+
+
+def test_registering_a_repo_populates_the_combo(window, git_repo) -> None:
+    store = Store(window.settings.db_path)
+    try:
+        repo = workflow.register_repo(store, git_repo, "python -m pytest -q")
+    finally:
+        store.close()
+    window.refresh_repos()
+    assert window.repo_combo.count() == 1
+    assert window.repo_combo.itemData(0) == repo.id
+    assert window.current_repo() is not None
+    assert window.current_repo().id == repo.id
+
+
+def test_request_validation_is_inline_and_textual(window) -> None:
+    valid, message = window.validate_request("")
+    assert not valid and "required" in message.lower()
+    valid, message = window.validate_request("ab")
+    assert not valid and "too short" in message
+    valid, message = window.validate_request("x" * 4001)
+    assert not valid and "too long" in message
+    valid, message = window.validate_request("guard the division")
+    assert valid and message == ""
+
+
+# --------------------------------------------------------------------------- #
+# graph model vs graph.layout
+# --------------------------------------------------------------------------- #
+def test_graph_model_matches_graph_layout(tmp_path: Path) -> None:
+    repo = make_multibranch_repo(tmp_path / "demo")
+    commits = read_commits(repo, limit=300)
+    rows = layout(commits)
+    assert commits, "fixture repo must have commits"
+
+    model = GraphTableModel(DARK)
+    model.set_rows(rows, list_branches(repo))
+
+    assert model.rowCount() == len(rows) == len(commits)
+    merges = [index for index, row in enumerate(rows) if len(row.commit.parents) >= 2]
+    assert merges, "the multibranch fixture must contain merge commits"
+    for index, row in enumerate(rows):
+        assert model.row_at(index) is row
+        assert model.row_at(index).column == row.column
+        assert model.is_merge(index) == (len(row.commit.parents) >= 2)
+        # the layout invariant the painter relies on
+        if index + 1 < len(rows):
+            assert row.lanes_out == rows[index + 1].lanes_in
+    # badges: HEAD, the tag and a remote ref all appear somewhere
+    all_badges = [text for row in range(model.rowCount()) for text, _kind in model.badges_for(row)]
+    assert "HEAD" in all_badges
+    assert any(text.startswith("tag: v0.1.0") for text in all_badges)
+    assert any(text.startswith("origin/") for text in all_badges)
+    # the full subject lives in the tooltip (the cell itself may elide)
+    subject_index = model.index(0, 2)
+    tooltip = model.data(subject_index, Qt.ToolTipRole) or ""
+    assert commits[0].subject in tooltip
+
+
+def test_graph_delegate_paints_without_errors(qapp, tmp_path: Path) -> None:
+    from selfkraken.gui.graph_widget import GraphView
+
+    repo = make_multibranch_repo(tmp_path / "demo2")
+    view = GraphView(DARK)
+    rows = layout(read_commits(repo))
+    view.set_rows(rows, list_branches(repo))
+    view.resize(900, 600)
+    view.show()
+    qapp.processEvents()
+    image = view.grab()
+    assert image.width() > 0 and image.height() > 0
+    view.close()
+
+
+# --------------------------------------------------------------------------- #
+# diff highlighter
+# --------------------------------------------------------------------------- #
+def test_diff_highlighter_formats_added_and_removed_lines_differently(qapp) -> None:
+    document = QTextDocument()
+    highlighter = DiffHighlighter(document, DARK)
+    added = highlighter.format_for_line("+    return a - b")
+    removed = highlighter.format_for_line("-    return a + b")
+    hunk = highlighter.format_for_line("@@ -1,5 +1,6 @@")
+    header = highlighter.format_for_line("+++ b/calc.py")
+    context = highlighter.format_for_line(" def add(a, b):")
+
+    assert added is not None and removed is not None
+    assert added.foreground().color() != removed.foreground().color()
+    assert added.background().color() != removed.background().color()
+    assert hunk is not None and hunk.foreground().color() != added.foreground().color()
+    assert header is not None and header.fontWeight() > added.fontWeight()
+    assert context is None
+
+
+def test_file_tree_expands_and_marks_changed_files(qapp) -> None:
+    from PySide6.QtWidgets import QTreeView
+
+    from selfkraken.gui.models import FileTreeModel
+
+    model = FileTreeModel(DARK)
+    model.set_files(
+        ["src/app/core.py", "src/app/auth.py", "tests/test_core.py", "README.md"],
+        ["src/app/core.py"],
+    )
+    view = QTreeView()
+    view.setModel(model)
+    view.show()
+    view.expandAll()
+    qapp.processEvents()
+
+    root_children = [
+        model.index(row, 0).data() for row in range(model.rowCount())
+    ]
+    assert "src/" in root_children
+    src = model.index(0, 0)
+    assert view.isExpanded(src)
+    app_node = model.index(0, 0, src)
+    assert app_node.data() == "app/"
+    assert model.parent(app_node).data() == "src/"
+    files = [model.index(i, 0, app_node).data() for i in range(model.rowCount(app_node))]
+    assert any(f.startswith("core.py") and FileTreeModel.CHANGED_MARK in f for f in files)
+    assert "auth.py" in files
+    view.close()
+
+
+def test_read_commit_detail_roundtrip(tmp_path: Path) -> None:
+    from selfkraken.gui.graph_widget import read_commit_detail
+
+    repo = make_multibranch_repo(tmp_path / "detail")
+    commits = read_commits(repo, limit=3)
+    assert commits
+    detail = read_commit_detail(repo, commits[0].sha)
+    assert detail["sha"] == commits[0].sha
+    assert detail["subject"] == commits[0].subject
+    assert isinstance(detail["parents"], list)
+    assert detail["author"]
+
+
+def test_local_time_is_one_consistent_format() -> None:
+    import re
+
+    from selfkraken.gui.models import local_time
+
+    assert local_time("") == ""
+    for stamp in (
+        "2023-11-14T13:13:20+00:00",  # UTC (selfkraken timestamps)
+        "2023-11-14T16:13:20+03:00",  # other offset (git commits)
+    ):
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", local_time(stamp))
+    # both describe the same instant -> identical local rendering
+    assert local_time("2023-11-14T13:13:20+00:00") == local_time(
+        "2023-11-14T16:13:20+03:00"
+    )
+
+
+def test_theme_resolution() -> None:
+    assert resolve("dark").name == "dark"
+    assert resolve("light").name == "light"
+    assert resolve("auto", prefers_dark=False).name == "light"
+    assert resolve("auto", prefers_dark=True).name == "dark"
+    assert LIGHT.text != DARK.text
+
+
+# --------------------------------------------------------------------------- #
+# the full loop, driven through the window's controller methods (inline jobs)
+# --------------------------------------------------------------------------- #
+def test_full_loop_propose_apply_tests_commit(window, git_repo, make_patch, sources, test_command) -> None:
+    # register (background job runs inline)
+    window.add_repo(git_repo, test_command)
+    assert window.repo_combo.count() == 1
+    repo = window.current_repo()
+    assert repo is not None and repo.test_command == test_command
+
+    # index
+    window.index_repo()
+    assert window.store.count_files(repo.id) >= 2
+
+    # propose from a pasted (manual) diff
+    patch = make_patch(
+        git_repo,
+        {"calc.py": sources["calc_with_sub"], "test_calc.py": sources["test_calc_with_sub"]},
+    )
+    window.submit_proposal("Add a sub() function with a test", diff_text=patch)
+    proposal_id = window._selected_proposal_id
+    assert proposal_id is not None
+    proposal = window.store.get_proposal(proposal_id)
+    assert proposal.status == "proposed"
+    assert proposal.model == "manual"
+    assert window.proposals_model.rowCount() == 1
+    assert window.diff_view.toPlainText().startswith("diff --git")
+    # touched files are marked in the tree
+    assert window.file_model.rowCount() > 0
+
+    # apply with tests + commit (confirm dialog accepted by no_dialogs)
+    window.confirm_handler = lambda title, text: True
+    window.apply_proposal(proposal_id, run_tests=True, commit=True, keep_on_failure=False)
+
+    final = window.store.get_proposal(proposal_id)
+    assert final.status == "tests_passed"
+    # selecting a proposal collapses the form so the diff owns the pane
+    assert not window.new_proposal_toggle.isChecked()
+    assert not window.proposal_form.isVisibleTo(window)
+    kinds = window.log_model.kinds()
+    for kind in ("register", "index", "propose", "apply", "test", "commit"):
+        assert kind in kinds, f"activity log must contain {kind!r}: {kinds}"
+    assert "OK" in window.status_label.text()
+
+    # the commit really exists in git
+    from selfkraken.gitops import head_sha
+
+    assert head_sha(git_repo) is not None
+    # graph reloaded through the controller
+    assert window.graph_view.table_model.rowCount() >= 1
+
+    # reject path on a fresh proposal
+    patch2 = make_patch(git_repo, {"calc.py": sources["calc_wrong"]})
+    window.submit_proposal("Break add on purpose", diff_text=patch2)
+    second_id = window._selected_proposal_id
+    window.reject_proposal(second_id)
+    assert window.store.get_proposal(second_id).status == "rejected"
+    assert "reject" in window.log_model.kinds()
+
+
+def test_failed_tests_rollback_is_reported(window, git_repo, make_patch, sources, test_command) -> None:
+    window.add_repo(git_repo, test_command)
+    window.confirm_handler = lambda title, text: True
+    patch = make_patch(git_repo, {"calc.py": sources["calc_wrong"]})
+    window.submit_proposal("Break add() so the tests fail", diff_text=patch)
+    proposal_id = window._selected_proposal_id
+    window.apply_proposal(proposal_id, run_tests=True, commit=False, keep_on_failure=False)
+    assert window.store.get_proposal(proposal_id).status == "tests_failed"
+    assert "rollback" in window.log_model.kinds()
+    assert "Error" in window.status_label.text()
+    # the working tree is clean again
+    from selfkraken.gitops import changed_paths
+
+    assert changed_paths(git_repo) == []
+
+
+# --------------------------------------------------------------------------- #
+# `skraken gui` without PySide6
+# --------------------------------------------------------------------------- #
+def test_cli_gui_without_pyside6_prints_friendly_error(
+    runner, cli_env, monkeypatch
+) -> None:
+    from selfkraken.cli import app
+
+    # Simulate a core-only install: importing the GUI module raises ImportError.
+    monkeypatch.setitem(sys.modules, "selfkraken.gui.app", None)
+    result = runner.invoke(app, ["gui"])
+    assert result.exit_code == 1
+    assert "the desktop GUI needs PySide6" in result.output
+    assert "pip install 'selfkraken[gui]'" in result.output
+
+
+def test_core_imports_do_not_pull_pyside6() -> None:
+    """A subprocess (fresh interpreter) proves laziness of the Qt imports."""
+    code = (
+        "import sys; import selfkraken.cli, selfkraken.workflow;"
+        "import selfkraken.gui;"
+        "assert 'PySide6' not in sys.modules, 'core import pulled PySide6'"
+    )
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
