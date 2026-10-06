@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,24 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QUrl, Qt  # noqa: E402
+from PySide6.QtWidgets import QHeaderView, QTabBar  # noqa: E402
+
+from selfkraken import workflow  # noqa: E402
+from selfkraken.db import Store  # noqa: E402
+from selfkraken.graph import layout, list_branches, read_commits  # noqa: E402
 
 from selfkraken.gui import monaco_payload as mp  # noqa: E402
 from selfkraken.gui import monaco_view as mv  # noqa: E402
 from selfkraken.gui.theme import DARK, LIGHT  # noqa: E402
+
+from fixtures_git import make_multibranch_repo  # noqa: E402
+
+
+def code_test_command(repo_path) -> str:
+    """A test command for the fixture repo (the suite's own interpreter)."""
+    import shlex
+
+    return f"{shlex.quote(sys.executable)} -m pytest -q"
 
 # --------------------------------------------------------------------------- #
 # the vendored editor is really here
@@ -272,6 +287,44 @@ def test_touched_lines_are_post_patch_line_numbers(git_repo, make_patch, sources
     assert mp.touched_lines(diff, "no/such/file.py") == set()
 
 
+def test_touched_lines_use_before_numbers_for_an_unapplied_patch() -> None:
+    """A proposed patch has not landed: mark lines the reader can actually see."""
+    diff = (
+        "diff --git a/c.py b/c.py\n"
+        "--- a/c.py\n"
+        "+++ b/c.py\n"
+        "@@ -1,3 +1,5 @@\n"
+        " one\n"
+        "-two\n"
+        "+TWO\n"
+        "+extra\n"
+        " three\n"
+        " four\n"
+    )
+    after = mp.touched_lines(diff, "c.py")
+    before = mp.touched_lines(diff, "c.py", after=False)
+    # post-patch: the added lines 2 and 3 of the result
+    assert after == {2, 3}
+    # pre-patch: the removed line, and the surviving line the insertion sits at —
+    # both of them exist in the file the editor is actually showing
+    assert before == {2, 3}
+    assert max(before) <= 3, "before-side numbers must exist in the file on disk"
+
+
+def test_touched_lines_pure_addition_marks_the_anchor_line() -> None:
+    diff = (
+        "diff --git a/n.py b/n.py\n"
+        "--- a/n.py\n"
+        "+++ b/n.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " first\n"
+        "+second inserted\n"
+        " third\n"
+    )
+    assert mp.touched_lines(diff, "n.py") == {2}
+    assert mp.touched_lines(diff, "n.py", after=False) == {2}
+
+
 def test_language_follows_the_extension() -> None:
     cases = {
         "src/app/core.py": "python",
@@ -428,14 +481,8 @@ def test_missing_vendored_files_disable_monaco(
 
 # --------------------------------------------------------------------------- #
 # the widget itself, offscreen: the fallback path
+# (the qapp / window fixtures come from tests/conftest.py)
 # --------------------------------------------------------------------------- #
-@pytest.fixture
-def qapp():
-    from PySide6.QtWidgets import QApplication
-
-    return QApplication.instance() or QApplication([])
-
-
 def test_monaco_view_offscreen_uses_the_plain_viewer_and_says_so(qapp) -> None:
     view = mv.MonacoView(DARK, name="proposal diff")
     view.show()
@@ -512,3 +559,182 @@ def test_payload_theme_tokens_come_from_the_palette() -> None:
     assert light["base"] == "vs-light"
     assert dark["fontSize"] == 12 and dark["lineHeight"] == 18
     assert light["background"] == LIGHT.base != dark["background"]
+    # Monaco and the plain viewer must not disagree about what "added" looks like
+    assert dark["addedForeground"] == DARK.diff["add"][0]
+
+
+# --------------------------------------------------------------------------- #
+# the window's centre tabs, driven through the controller (offscreen = fallback)
+# --------------------------------------------------------------------------- #
+def test_changes_tab_lists_every_file_of_a_multi_file_diff(
+    window, git_repo, make_patch, sources
+) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    assert window.tabs.tabText(2) == "&Changes"
+    window.add_repo(git_repo, code_test_command(git_repo))
+    window.index_repo()
+    patch = make_patch(
+        git_repo,
+        {"calc.py": sources["calc_with_sub"], "test_calc.py": sources["test_calc_with_sub"]},
+    )
+    window.submit_proposal("Add a sub() function with a test", diff_text=patch)
+    QApplication.processEvents()
+
+    assert [p.path for p in window._diff_patches] == ["calc.py", "test_calc.py"]
+    model = window.diff_files.model()
+    assert model.rowCount() == 2
+    # isHidden() is the pane's own flag; isVisibleTo(window) would also be false
+    # for a widget sitting on a tab page that is not the current one
+    assert not window.diff_files.isHidden(), "a multi-file diff lists its files"
+    window.tabs.setCurrentIndex(2)
+    assert window.diff_files.isVisibleTo(window)
+    counts = [model.index(r, 0).data(Qt.ItemDataRole.UserRole) for r in range(2)]
+    assert all(added > 0 for added, _removed in counts), counts
+    assert window.diff_view.toPlainText().startswith("diff --git a/")
+    # the summary replaces the duplicated file name in the strip
+    assert "2 files" in window.diff_title.text()
+
+
+def test_single_file_diff_hides_the_file_list(
+    window, git_repo, make_patch, sources
+) -> None:
+    window.add_repo(git_repo, code_test_command(git_repo))
+    window.submit_proposal(
+        "Break add on purpose", diff_text=make_patch(git_repo, {"calc.py": sources["calc_wrong"]})
+    )
+    assert len(window._diff_patches) == 1
+    assert window.diff_files.isHidden(), "one row of nothing is a dead band"
+    assert window.diff_title.text() == "calc.py"
+
+
+def test_side_by_side_toggle_renders_the_other_layout(
+    window, git_repo, make_patch, sources
+) -> None:
+    window.add_repo(git_repo, code_test_command(git_repo))
+    window.submit_proposal(
+        "Break add on purpose", diff_text=make_patch(git_repo, {"calc.py": sources["calc_wrong"]})
+    )
+    was = window.diff_view.is_side_by_side()
+    window.side_by_side_button.setChecked(not was)
+    assert window.diff_view.is_side_by_side() is (not was)
+    assert window.diff_view.toPlainText().startswith("diff --git")
+
+
+def test_opening_a_file_adds_a_closable_centre_tab(
+    window, git_repo, make_patch, sources
+) -> None:
+    window.add_repo(git_repo, code_test_command(git_repo))
+    window.index_repo()
+    before = window.tabs.count()
+    window.open_file_tab("calc.py")
+    assert window.tabs.count() == before + 1
+    index = window.tabs.count() - 1
+    assert "calc.py" in window.tabs.tabText(index)
+    assert window.tabs.widget(index).toPlainText() == sources["calc"]
+    bar = window.tabs.tabBar()
+    close = bar.tabButton(index, QTabBar.ButtonPosition.RightSide)
+    assert close is not None and close.objectName() == "tabClose"
+    assert close.text() == "\u2715", "a quiet glyph, not a filled red box"
+    assert bar.tabButton(0, QTabBar.ButtonPosition.RightSide) is None, "Graph is not closable"
+    assert bar.tabButton(2, QTabBar.ButtonPosition.RightSide) is None, "Changes is not closable"
+    window.open_file_tab("calc.py")  # the same path focuses, never duplicates
+    assert window.tabs.count() == before + 1
+    close.click()  # the real button closes its own tab
+    assert window.tabs.count() == before
+
+
+def test_switching_repository_closes_file_tabs(window, git_repo, tmp_path) -> None:
+    from conftest import git as git_in  # the suite's own git helper
+
+    window.add_repo(git_repo, code_test_command(git_repo))
+    window.open_file_tab("calc.py")
+    assert window.tabs.count() > 3
+    second = tmp_path / "other-repo"
+    second.mkdir()
+    (second / "x.py").write_text("X = 1\n", encoding="utf-8")
+    git_in(second, "init", "-q")
+    git_in(second, "config", "user.name", "selfkraken-test")
+    git_in(second, "config", "user.email", "selfkraken-test@localhost")
+    git_in(second, "add", "-A")
+    git_in(second, "commit", "-q", "-m", "second repo")
+    window.add_repo(second, None)
+    assert window.tabs.count() == 3, "a tab of another repository is not context"
+
+
+def test_start_hooks_drive_the_window(
+    qapp, gui_settings, no_dialogs, git_repo, monkeypatch
+) -> None:
+    """SK_GUI_START_TAB / SK_GUI_SELECT_PROPOSAL exist for capture and checking."""
+    from selfkraken.gui.app import MainWindow
+
+    store = Store(gui_settings.db_path)
+    try:
+        repo = workflow.register_repo(store, git_repo, None)
+        proposal = store.create_proposal(
+            repo.id,
+            "guard the division",
+            "manual",
+            "diff --git a/x.py b/x.py\n",
+            rationale="",
+        )
+        proposal_id = proposal.id
+    finally:
+        store.close()
+    monkeypatch.setenv("SK_GUI_START_TAB", "changes")
+    monkeypatch.setenv("SK_GUI_SELECT_PROPOSAL", "1")
+    win = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        win.show()
+        qapp.processEvents()
+        assert win.tabs.currentIndex() == 2
+        assert win._selected_proposal_id == proposal_id
+    finally:
+        win.close()
+
+
+def test_graph_date_column_can_never_elide(qapp, git_repo) -> None:
+    """The date is sized from the widest string the formatter can produce."""
+    from PySide6.QtGui import QFontMetrics
+
+    from selfkraken.gui.graph_widget import GraphView
+    from selfkraken.gui.models import TIMESTAMP_SAMPLE, date_column_width, meta_font
+    from selfkraken.graph import layout, read_commits
+
+    view = GraphView(DARK)
+    try:
+        view.set_rows(layout(read_commits(git_repo)), [])
+        view.resize(1280, 700)
+        view.show()
+        qapp.processEvents()
+        budget = date_column_width(view, TIMESTAMP_SAMPLE, "Date")
+        for font in (view.font(), meta_font()):
+            needed = QFontMetrics(font).horizontalAdvance("2025-03-09 08:00")
+            assert budget >= needed + 2 * 6, f"{font.pointSizeF()}pt would be elided"
+        assert view.columnWidth(4) == budget
+    finally:
+        view.close()
+
+
+def test_graph_refs_column_serves_the_visible_rows(qapp, tmp_path) -> None:
+    """Refs is sized to what is on screen, and Subject keeps the rest."""
+    from selfkraken.gui.graph_widget import (
+        REFS_COLUMN_HARD_MAX,
+        REFS_VIEWPORT_SHARE,
+        GraphView,
+    )
+
+    repo = make_multibranch_repo(tmp_path / "demo")
+    view = GraphView(DARK)
+    try:
+        view.set_rows(layout(read_commits(repo, limit=300)), list_branches(repo))
+        view.resize(1000, 500)
+        view.show()
+        qapp.processEvents()
+        viewport = view.viewport().width()
+        refs = view.columnWidth(1)
+        assert refs <= max(REFS_COLUMN_HARD_MAX, int(viewport * REFS_VIEWPORT_SHARE))
+        assert view.horizontalHeader().sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
+        assert view.columnWidth(2) > refs, "Subject must out-width the badge column"
+    finally:
+        view.close()

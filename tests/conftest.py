@@ -7,6 +7,7 @@ diff/apply/test/rollback machinery is exercised for real.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -173,3 +174,66 @@ def cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
+
+
+# --------------------------------------------------------------------------- #
+# desktop GUI fixtures (shared by tests/test_gui.py and tests/test_monaco.py)
+#
+# Qt is imported *inside* these fixtures: the suite must still collect on a
+# core-only install, where both GUI test modules skip themselves.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="session")
+def qapp():
+    """One QApplication for the whole session (offscreen, see the test modules)."""
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication(sys.argv[:1])
+
+
+@pytest.fixture
+def gui_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Temp data dir for both the UI store and the workers' load_settings()."""
+    from selfkraken.config import load_settings
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SK_DATA_DIR", str(data_dir))
+    for variable in ("SK_LLM_BASE_URL", "SK_LLM_API_KEY", "SK_LLM_MODEL"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("SK_TEST_TIMEOUT", "120")
+    return load_settings(
+        env={**os.environ, "SK_DATA_DIR": str(data_dir)}, load_dotenv_file=False
+    )
+
+
+@pytest.fixture
+def no_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never block on a modal QMessageBox in offscreen tests."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        QMessageBox, "critical",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+        raising=False,
+    )
+
+
+@pytest.fixture
+def window(qapp, gui_settings, no_dialogs):
+    """The real main window with every background job running inline."""
+    from selfkraken.gui.app import MainWindow
+
+    win = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        yield win
+    finally:
+        win.close()

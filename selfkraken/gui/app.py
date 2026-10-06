@@ -80,7 +80,7 @@ from selfkraken.graph import GraphRow, layout, list_branches, read_commits
 from selfkraken.workflow import ApplyOutcome, DEGRADED_MODE_HINT
 
 from selfkraken.gui import monaco_payload as monaco_api
-from selfkraken.gui.diff_view import DiffHighlighter, monospace_font
+from selfkraken.gui.diff_view import monospace_font
 from selfkraken.gui.graph_widget import GraphView, read_commit_detail
 from selfkraken.gui.monaco_view import MonacoView
 from selfkraken.gui.models import (
@@ -1065,18 +1065,6 @@ class MainWindow(QMainWindow):
         self.diff_files.setVisible(False)
         self.diff_view.clear()
 
-    def _apply_diff_layout(self) -> None:
-        """Decide inline vs side-by-side from the pane, unless the user chose."""
-        if self._diff_auto_side:
-            wanted = self.changes_page.width() >= SIDE_BY_SIDE_MIN_WIDTH
-            if wanted != self.side_by_side_button.isChecked():
-                self._diff_side_by_side = wanted
-                self.side_by_side_button.setChecked(wanted)
-                self._repaint_diff()
-        elif self._diff_side_by_side != self.side_by_side_button.isChecked():
-            self._diff_side_by_side = self.side_by_side_button.isChecked()
-            self._repaint_diff()
-
     # -------------------------------------------------------------- left dock
     def _build_left_dock(self) -> None:
         dock = self._make_dock("Repository", "leftDock")
@@ -1368,7 +1356,12 @@ class MainWindow(QMainWindow):
         self.tests_toggle.setAccessible("Toggle test output section")
         self.tests_toggle.setEnabled(False)
         self.tests_output = MonacoView(self.palette, name="test output")
-        self.tests_output.setFixedHeight(mono_box_height(TEST_OUTPUT_LINES))
+        # at least seven lines, and it takes whatever the pane has left when it
+        # is open: a collapsed box must not leave a dead band under the buttons
+        self.tests_output.setMinimumHeight(mono_box_height(TEST_OUTPUT_LINES))
+        self.tests_output.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.tests_output.setVisible(False)
         self.tests_output.setAccessibleName("Test output tail")
         self.tests_toggle.toggled.connect(self.tests_output.setVisible)
@@ -1377,8 +1370,10 @@ class MainWindow(QMainWindow):
         tests_box.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
         tests_box.setSpacing(LAYOUT_SPACING)
         tests_box.addWidget(self.tests_toggle)
-        tests_box.addWidget(self.tests_output)
-        column.addLayout(tests_box)
+        tests_box.addWidget(self.tests_output, 1)
+        # the open test output takes the slack; when it is collapsed the trailing
+        # stretch below absorbs it, so no gap ever opens between two sections
+        column.addLayout(tests_box, 1)
 
         # everything the pane owns is packed from the top; the one place leftover
         # height may gather is the bottom, never between two sections
@@ -2206,13 +2201,13 @@ class MainWindow(QMainWindow):
         patches = self._diff_patches
         if not patches:
             return
-        row = self._selected_diff_row() if self.diff_files.isVisible() else 0
-        row = max(row, 0)
+        row = max(self._selected_diff_row(), 0)
         if row >= len(patches):
             return
         patch = patches[row]
         pair = self._diff_pairs[row] if row < len(self._diff_pairs) else None
-        if self.diff_files.isVisible():
+        listing = not self.diff_files.isHidden()  # the tab page may be hidden
+        if listing:
             # the row already names the file: the strip summarises the proposal
             added = sum(item.added for item in patches)
             removed = sum(item.removed for item in patches)
@@ -2226,7 +2221,7 @@ class MainWindow(QMainWindow):
             self.diff_view.show_text(patch.chunk)
             return
         # with the file list showing, its selected row already carries the counts
-        self.diff_hint.setText("" if self.diff_files.isVisible() else
+        self.diff_hint.setText("" if listing else
                                f"+{patch.added}  \u2212{patch.removed}")
         self.side_by_side_button.setEnabled(True)
         self.diff_view.show_diff(
@@ -2279,8 +2274,7 @@ class MainWindow(QMainWindow):
         if repo is None:
             return
         repo_path = Path(repo.path)
-        proposal = self._selected_proposal()
-        lines = monaco_api.touched_lines(proposal.diff, path) if proposal else set()
+        lines = self._touched_lines_for(path)
         self._file_request += 1
         token = self._file_request
 
@@ -2310,6 +2304,7 @@ class MainWindow(QMainWindow):
         view.setProperty("skPath", path)
         index = self.tabs.addTab(view, _tab_title(path))
         self.tabs.setTabToolTip(index, path)
+        self._install_tab_close_button(index)
         if text is not None:  # only a real body is worth re-highlighting later
             self._open_files[path] = (view, text)
         # bound the renderer cost: the oldest extra file tab goes
@@ -2317,14 +2312,54 @@ class MainWindow(QMainWindow):
             self._close_code_tab(PERMANENT_TABS)
         self.tabs.setCurrentIndex(index)
 
+    def _touched_lines_for(self, path: str) -> set[int]:
+        """The lines of *path* the selected proposal touches, on the right side.
+
+        A proposed patch has not been applied, so its added lines do not exist in
+        the file the editor is showing: those are marked where the *before* file
+        has them.  Once applied, the same lines are numbered after the patch.
+        """
+        proposal = self._selected_proposal()
+        if proposal is None:
+            return set()
+        applied = proposal.status in workflow.REVERTIBLE_STATUSES
+        return monaco_api.touched_lines(proposal.diff, path, after=applied)
+
+    def _install_tab_close_button(self, index: int) -> None:
+        """A quiet ✕ on a file tab, in the tab's own colours.
+
+        Qt's built-in close button is a filled box that reads as an alarm next to
+        tab text and is the same colour in both palettes, so closable tabs carry
+        their own tool button; the permanent tabs keep none.
+        """
+        button = QToolButton(self.tabs)
+        button.setObjectName("tabClose")
+        button.setText("\u2715")  # a glyph, not a control skin
+        button.setAutoRaise(True)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        side = max(ROW_HEIGHT - 8, SPACE_12)
+        button.setFixedSize(side, side)
+        button.setToolTip("Close this file")
+        button.setAccessibleName(f"Close {self.tabs.tabText(index)}")
+        button.clicked.connect(self._on_tab_close_clicked)
+        self.tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
+
+    def _on_tab_close_clicked(self) -> None:
+        """Close the tab a ✕ belongs to (indices shift, so look the button up)."""
+        button = self.sender()
+        bar = self.tabs.tabBar()
+        for index in range(bar.count()):
+            if bar.tabButton(index, QTabBar.ButtonPosition.RightSide) is button:
+                self._close_code_tab(index)
+                return
+
     def _refresh_file_highlights(self) -> None:
         """Re-mark the lines the *newly* selected proposal touches."""
         if not self._open_files:
             return
-        proposal = self._selected_proposal()
         for path, (view, text) in list(self._open_files.items()):
-            lines = monaco_api.touched_lines(proposal.diff, path) if proposal else set()
-            view.show_file(text, path, highlight_lines=lines)
+            view.show_file(text, path, highlight_lines=self._touched_lines_for(path))
 
     def _close_code_tab(self, index: int) -> None:
         if index < PERMANENT_TABS or index >= self.tabs.count():

@@ -462,6 +462,18 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     }}
     QTabBar::tab:selected {{ background: {p.base}; color: {p.text}; }}
     QTabBar::tab:hover:!selected {{ color: {p.text}; }}
+    /* the close box on a file tab: a quiet glyph in the tab's own colour, never
+       a filled red button — it sits next to text, not in a dialog title bar */
+    QTabBar QToolButton#tabClose {{
+        background: transparent; border: none;
+        color: {p.muted}; font-size: {META_PT:g}pt;
+        padding: 0px; margin-left: {SPACE_2}px; margin-right: {SPACE_2}px;
+        border-radius: {BADGE_RADIUS}px;
+    }}
+    QTabBar QToolButton#tabClose:hover {{
+        color: {p.text}; background: {p.selection_bg};
+    }}
+    QTabBar QToolButton#tabClose:pressed {{ background: {p.border}; color: {p.text}; }}
 
     /* ------------------------------------------------------ item views */
     QTreeView, QListView, QTableView, QColumnView {{

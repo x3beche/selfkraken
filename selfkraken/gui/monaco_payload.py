@@ -22,7 +22,7 @@ import json
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -326,12 +326,15 @@ def _apply_chunk(
 # --------------------------------------------------------------------------- #
 # touched lines (for highlighting a file the proposal changes)
 # --------------------------------------------------------------------------- #
-def touched_lines(diff: str, path: str) -> set[int]:
-    """1-based line numbers *path* has **after** the patch, for touched lines.
+def touched_lines(diff: str, path: str, *, after: bool = True) -> set[int]:
+    """1-based line numbers *path* has for the lines the patch touches.
 
-    Added lines and the lines inside a hunk's modified window count; pure
-    context outside a hunk does not.  Line numbers are in the *post-patch* file,
-    because that is what the tree opens and what the user reads.
+    ``after`` (the default) numbers them in the **post-patch** file — right when
+    the change is applied and the editor shows the result.  For a proposal that
+    is still only proposed, the file on disk is the *before* one, so the caller
+    passes ``after=False``: removed lines and context lines are marked where they
+    actually sit, and a pure addition marks the line it would follow.  Either way
+    the numbers refer to lines the reader can see.
     """
     want = _safe_rel(path)
     if want is None:
@@ -342,28 +345,39 @@ def touched_lines(diff: str, path: str) -> set[int]:
             continue
         counter = 0
         in_hunk = False
+        pending_insertion = False
         for line in patch.chunk.splitlines():
             match = _HUNK.match(line)
             if match:
-                counter = int(match.group(3))
+                # group 1 is the old start of the hunk, group 3 the new one
+                counter = int(match.group(1) if not after else match.group(3))
                 in_hunk = True
+                pending_insertion = False
                 continue
             if not in_hunk:
                 continue
-            if line.startswith("diff --git") or line.startswith("--- "):
+            if line.startswith(("diff --git", "--- ", "+++ ")):
                 in_hunk = False
                 continue
-            if line.startswith("+++ "):
+            if line.startswith("\\"):  # "\ No newline at end of file"
                 continue
             if line.startswith("-"):
-                continue  # removed: consumes no line in the post-patch file
+                if not after:
+                    lines.add(counter)  # a removed line is here in the before file
+                    counter += 1
+                continue  # post-patch it occupies no line at all
             if line.startswith("+"):
-                lines.add(counter)
-                counter += 1
-            elif line.startswith("\\"):  # "\ No newline at end of file"
+                if after:
+                    lines.add(counter)
+                    counter += 1
+                else:
+                    pending_insertion = True  # marked on the next surviving line
                 continue
-            else:
-                counter += 1
+            here = counter
+            counter += 1
+            if not after and pending_insertion:
+                lines.add(here)  # the line an insertion was made after
+                pending_insertion = False
         break
     return lines
 
