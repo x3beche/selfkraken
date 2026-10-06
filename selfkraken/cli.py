@@ -519,7 +519,9 @@ def show(
 def apply_change(
     proposal_id: int = typer.Argument(..., help="Proposal to apply (must still be 'proposed')."),
     no_test: bool = typer.Option(False, "--no-test", help="Apply without running the test command."),
-    commit: bool = typer.Option(False, "--commit", help="Commit the touched files if tests pass."),
+    commit: bool = typer.Option(
+        False, "--commit", help="Commit the touched files if tests pass (requires a clean tree in those files)."
+    ),
     keep_on_failure: bool = typer.Option(
         False, "--keep-on-failure", help="Leave the change in the working tree even if tests fail."
     ),

@@ -244,6 +244,8 @@ def apply_proposal(store, settings, proposal_id: int, *, run_tests: bool = True,
     #   pass -> "tests_passed"; fail -> "tests_failed" and unless keep_on_failure: reverse_diff, record "rollback",
     #   rolled_back=True, final status "tests_failed".
     # commit only if not rolled back (and tests passed or none configured): commit_paths(touched) -> record "commit".
+    # With commit=True, before applying anything: if any touched path has uncommitted changes (gitops.changed_paths),
+    # raise ValidationError and touch nothing (status stays "proposed"); without commit=True a dirty tree is allowed.
 def reject_proposal(store, proposal_id: int) -> Proposal          # from "proposed" only; record "reject"
 def revert_proposal(store, proposal_id: int) -> Proposal
     # from applied/tests_passed/tests_failed-not-rolled-back; can_reverse else ValidationError; reverse_diff;
