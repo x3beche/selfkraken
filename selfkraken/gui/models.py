@@ -51,6 +51,15 @@ TIMESTAMP_SAMPLE: Final[str] = "0000-00-00 00:00"
 ID_SAMPLE: Final[str] = "999999"
 
 
+def meta_font():
+    """The secondary type tier: author and date are metadata, not the subject."""
+    from selfkraken.gui.theme import META_PT, ui_family
+
+    font = QFont(ui_family())
+    font.setPointSizeF(META_PT)
+    return font
+
+
 def sized_column_width(
     view,
     value_text: str,
@@ -63,13 +72,11 @@ def sized_column_width(
     Measured with the view's own font — the one the cells both paint and elide
     in — plus the stylesheet's 6px cell padding.  Nothing is guessed from
     pixels, so a wider system font widens the column instead of truncating it.
-    ``column`` is kept for callers that want per-column roles later.
     """
-    # the view's own font is what the cells both paint and elide in, so it is
-    # the only font a column may be measured with
+    metrics = QFontMetrics(view.font())
     width = max(
-        QFontMetrics(view.font()).horizontalAdvance(value_text),
-        QFontMetrics(view.font()).horizontalAdvance(header_text),
+        metrics.horizontalAdvance(value_text),
+        metrics.horizontalAdvance(header_text),
     )
     return width + 2 * CELL_PADDING + SPACE_4 + extra
 
@@ -134,6 +141,8 @@ class GraphTableModel(QAbstractTableModel):
             return None
         if role == Qt.TextAlignmentRole and index.column() == 4:
             return int(Qt.AlignLeft | Qt.AlignVCenter)
+        if role == Qt.FontRole and index.column() in (3, 4):
+            return meta_font()
         if role == Qt.ForegroundRole and index.column() in (3, 4):
             return QColor(self._palette.muted)
         return None

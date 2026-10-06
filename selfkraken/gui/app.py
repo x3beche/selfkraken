@@ -12,13 +12,14 @@ tests drive the whole loop with it, without event-loop timing.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -142,6 +143,12 @@ LOG_LIMIT = 200
 #: remembered window geometry, kept inside the app's own data directory
 WINDOW_STATE_FILENAME = "gui-window.json"
 MIN_REMEMBERED_SIZE = (800, 600)
+
+#: environment hooks that drive the window into a state from outside — used by
+#: the screenshot script and by real-display verification, never by a user
+START_TAB_VAR = "SK_GUI_START_TAB"
+SELECT_PROPOSAL_VAR = "SK_GUI_SELECT_PROPOSAL"
+OPEN_FILE_VAR = "SK_GUI_OPEN_FILE"
 
 #: how many lines each read-only / input text box shows before it scrolls
 RATIONALE_MAX_LINES = 6
@@ -800,6 +807,11 @@ class MainWindow(QMainWindow):
         repo_label = QLabel("Repo:")
         repo_label.setObjectName("fieldLabel")
         repo_label.setAccessibleName("Repository selector label")
+        # the toolbar gives an unmeasured label as much room as it feels like,
+        # which on a real desktop clipped it to "Rep"; pin it to its own text
+        repo_label.setFixedWidth(
+            QFontMetrics(repo_label.font()).horizontalAdvance("Repo:") + SPACE_4
+        )
         self.repo_combo = QComboBox()
         self.repo_combo.setMinimumWidth(REPO_COMBO_WIDTH)
         self.repo_combo.setFixedHeight(control_height(INPUT_HEIGHT, FONT_PT))
@@ -964,9 +976,18 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.changes_page, "&Changes")
         self.tabs.setTabsClosable(True)  # file tabs get a close button
         self.tabs.tabCloseRequested.connect(self._close_code_tab)
+        self.tabs.currentChanged.connect(self._on_centre_tab_changed)
         for index in range(PERMANENT_TABS):
             self.tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
         self.setCentralWidget(self.tabs)
+
+    def _on_centre_tab_changed(self, index: int) -> None:
+        """Coming back to Changes re-checks the inline/side decision: the pane
+        had no width to measure while it was hidden, so the strip and the editor
+        may still show what the last visible size implied."""
+        if index == TAB_CHANGES and self._diff_patches:
+            self._apply_diff_layout()
+            self._repaint_diff()
 
     # ------------------------------------------------------------ changes tab
     def _build_changes_page(self) -> QWidget:
@@ -1336,7 +1357,9 @@ class MainWindow(QMainWindow):
         detail_layout.addWidget(diff_pointer)
         detail_layout.addLayout(option_row)
         detail_layout.addLayout(button_row)
-        column.addWidget(self.detail_group, 1)
+        # no stretch inside: with the diff next door this section is exactly as
+        # tall as its own content, so no gap opens between meta and rationale
+        column.addWidget(self.detail_group)
 
         # -- test output (same header style, collapsed unless the tests ran) --
         self.tests_toggle = SectionHeader(
@@ -1356,6 +1379,10 @@ class MainWindow(QMainWindow):
         tests_box.addWidget(self.tests_toggle)
         tests_box.addWidget(self.tests_output)
         column.addLayout(tests_box)
+
+        # everything the pane owns is packed from the top; the one place leftover
+        # height may gather is the bottom, never between two sections
+        column.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setObjectName("reviewScroll")
@@ -1431,7 +1458,9 @@ class MainWindow(QMainWindow):
         if not self._docks_balanced:
             self._docks_balanced = True
             self._apply_dock_ratios()
-            self._fit_log_dock()
+            # once more now that the dock has a real height to be compared with
+            QTimer.singleShot(0, lambda: self._fit_log_dock(force=True))
+            QTimer.singleShot(0, self._apply_start_hooks)
 
     def _apply_dock_ratios(self) -> None:
         """Left dock ~16% of the window, review pane ~34%, graph keeps the rest."""
@@ -1520,6 +1549,33 @@ class MainWindow(QMainWindow):
             previous = widget
 
     # ------------------------------------------------------------ states/UIX
+    def _apply_start_hooks(self) -> None:
+        """Drive the window into a state from the environment (debug/screenshots).
+
+        A synthetic key event does not reach this window under every window
+        manager, so the states the reviewer and the screenshot script need are
+        also reachable from outside: ``SK_GUI_SELECT_PROPOSAL=1`` (or an id),
+        ``SK_GUI_START_TAB=graph|proposals|changes`` and ``SK_GUI_OPEN_FILE=path``.
+        With none of them set this does nothing at all.
+        """
+        selection = (os.environ.get(SELECT_PROPOSAL_VAR) or "").strip()
+        if selection:
+            if selection.isdigit() and int(selection) > 1:
+                self.select_proposal(int(selection))
+            else:
+                proposals = self.store.list_proposals(repo_id=self._current_repo_id)
+                if proposals:
+                    self.select_proposal(proposals[0].id)
+        wanted = (os.environ.get(START_TAB_VAR) or "").strip().lower()
+        index = {
+            "graph": TAB_GRAPH, "proposals": TAB_PROPOSALS, "changes": TAB_CHANGES,
+        }.get(wanted)
+        if index is not None:
+            self.tabs.setCurrentIndex(index)
+        path = (os.environ.get(OPEN_FILE_VAR) or "").strip()
+        if path:
+            self.open_file_tab(path)
+
     def say_ok(self, message: str) -> None:
         """Success state: the 'OK' text label is always present."""
         self._set_status(f"OK: {message}", ok=True)
@@ -1660,24 +1716,34 @@ class MainWindow(QMainWindow):
         self.log_model.set_changes(self.store.list_changes(limit=LOG_LIMIT))
         self._fit_log_dock()
 
-    def _fit_log_dock(self) -> None:
-        """No dead band under a short log: the dock is as tall as its rows.
+    def _fit_log_dock(self, force: bool = False) -> None:
+        """No dead band and no half row: the dock is exactly N whole rows tall.
 
-        Capped at ACTIVITY_LOG_HEIGHT and floored at a couple of rows, and left
-        alone once the user has dragged the splitter themselves.
+        The height is title + header + chrome + ``rows * row_height``, so the
+        last visible row always ends at the dock's edge — a capped pixel height
+        used to cut the bottom row in half.  Capped at ACTIVITY_LOG_HEIGHT by
+        dropping *whole* rows, floored at one row (then it scrolls), and left
+        alone once the user has dragged the splitter themselves.  ``force`` is
+        the one shot right after the window is mapped: before that the dock
+        reports its old height and a fit computed then never gets applied.
         """
-        rows = self.log_model.rowCount()
         row_height = self.log_table.verticalHeader().defaultSectionSize()
         header = self.log_table.horizontalHeader().sizeHint().height()
-        needed = (
-            header
-            + max(min(rows, LOG_DOCK_MAX_ROWS), LOG_DOCK_MIN_ROWS) * row_height
-            + 2 * MARGIN_PANEL
-            + DOCK_TITLE_HEIGHT
-            + SPLITTER_HIT
+        chrome = header + 2 * MARGIN_PANEL + DOCK_TITLE_HEIGHT + SPLITTER_HIT
+        available = self.log_model.rowCount()
+        # never taller than the log itself: three empty rows under a one-line log
+        # is exactly the dead band this dock is supposed to avoid
+        rows = min(max(available, 1), LOG_DOCK_MAX_ROWS)
+        height = chrome + rows * row_height
+        while rows > 1 and height > ACTIVITY_LOG_HEIGHT:
+            rows -= 1  # give back a full row, never a few pixels of one
+            height = chrome + rows * row_height
+        height = max(height, chrome + row_height)
+        untouched = (
+            self._log_dock_height is None
+            or self.bottom_dock.height() in (self._log_dock_height, 0)
         )
-        height = max(LOG_DOCK_MIN_HEIGHT, min(needed, ACTIVITY_LOG_HEIGHT))
-        if self.bottom_dock.height() in (self._log_dock_height, 0) or self._log_dock_height is None:
+        if force or untouched:
             self.resizeDocks([self.bottom_dock], [height], Qt.Orientation.Vertical)
             self._log_dock_height = height
 
@@ -2146,14 +2212,22 @@ class MainWindow(QMainWindow):
             return
         patch = patches[row]
         pair = self._diff_pairs[row] if row < len(self._diff_pairs) else None
-        self.diff_title.setText(patch.label)
+        if self.diff_files.isVisible():
+            # the row already names the file: the strip summarises the proposal
+            added = sum(item.added for item in patches)
+            removed = sum(item.removed for item in patches)
+            self.diff_title.setText(f"{len(patches)} files  +{added}  \u2212{removed}")
+        else:
+            self.diff_title.setText(patch.label)
         self.diff_title.setToolTip(patch.label)
         if pair is None:
             self.diff_hint.setText("raw patch — it does not fit HEAD")
             self.side_by_side_button.setEnabled(False)
             self.diff_view.show_text(patch.chunk)
             return
-        self.diff_hint.setText(f"+{patch.added}  \u2212{patch.removed}")
+        # with the file list showing, its selected row already carries the counts
+        self.diff_hint.setText("" if self.diff_files.isVisible() else
+                               f"+{patch.added}  \u2212{patch.removed}")
         self.side_by_side_button.setEnabled(True)
         self.diff_view.show_diff(
             pair[0], pair[1], patch.path or patch.old_path,
