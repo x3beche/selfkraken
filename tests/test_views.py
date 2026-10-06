@@ -63,7 +63,9 @@ def test_graph_octopus_row_draws_multiple_out_edges(tmp_path: Path) -> None:
     repo = make_octopus_repo(tmp_path / "repo")
     text = capture(render_graph(repo), width=160)
     octo_row = next(line for line in text.splitlines() if "octopus" in line)
-    assert octo_row.count("╮") == 3 or octo_row.count("+") == 3  # three side lanes
+    # three side lanes branch off: corners (╮) plus T-junctions (┬)
+    assert octo_row.count("╮") + octo_row.count("┬") == 3
+    assert "╲" not in octo_row  # no floating diagonals
 
 
 def test_graph_ascii_only_has_no_box_glyphs(tmp_path: Path) -> None:
@@ -94,9 +96,26 @@ def test_graph_empty_repo_friendly(tmp_path: Path) -> None:
 def test_graph_ref_labels_are_text_not_color_only(tmp_path: Path) -> None:
     repo = make_multibranch_repo(tmp_path / "repo")
     # color_system=None strips all styling; labels must survive as plain text
-    text = capture(render_graph(repo))
+    text = capture(render_graph(repo), width=160)
     assert "[tag: v0.1.0]" in text
-    assert "[origin/feature/search]" in text
+    assert "[feature/search ⇄ origin]" in text  # collapsed local+remote
+    assert "[origin/feature/search]" not in text  # no duplicate listing
+    assert "[origin/main]" in text  # remote-only ref stays separate
+
+
+def test_graph_rows_never_wrap(tmp_path: Path) -> None:
+    repo = make_multibranch_repo(tmp_path / "repo")
+    narrow = Console(record=True, width=90, color_system=None)
+    narrow.print(render_graph(repo))
+    lines = [line for line in narrow.export_text().splitlines() if line.strip()]
+    assert len(lines) == 15, "\n".join(lines)  # one line per commit, no wrapping
+
+
+def test_graph_date_column_is_short_iso(tmp_path: Path) -> None:
+    repo = make_multibranch_repo(tmp_path / "repo")
+    text = capture(render_graph(repo), width=160)
+    assert "2023-11-15" in text
+    assert "+00:00" not in text
 
 
 # ---------------------------------------------------------------- render_branches
