@@ -13,8 +13,9 @@ What is pinned down:
 * a proposal made on one branch cannot be applied on another branch whose file
   differs: the CLI exits 2 with ``Error:``, the proposal stays ``proposed`` and
   the working tree is untouched;
-* an uncommitted user edit in the same file is never lost, whether the apply is
-  refused or goes through;
+* an uncommitted user edit in a touched file is never committed: ``--commit``
+  refuses with exit 2 and the proposal stays ``proposed``, while an apply without
+  ``--commit`` goes through and the edit is never lost;
 * failing tests on a feature branch roll the change back byte-for-byte, create
   no commit, and leave ``propose -> apply -> test -> rollback`` in the audit log;
 * reverting a proposal after its commit has been merged either works cleanly or
@@ -401,10 +402,10 @@ def test_apply_after_switching_to_a_branch_with_a_different_file_fails_cleanly(
 
 
 # --------------------------------------------------------------------------- 3
-def test_apply_on_dirty_tree_never_loses_the_users_uncommitted_edit(
-    runner: CliRunner, cli_env: Path, indexed: Path, patch_file
+def test_apply_with_commit_refuses_dirty_touched_paths_and_never_loses_the_users_edit(
+    runner: CliRunner, cli_env: Path, indexed: Path, patch_file, cli_store: Store
 ) -> None:
-    """Uncommitted user work in the same file survives apply+commit."""
+    """--commit refuses while a touched file is dirty; without it the apply keeps the WIP."""
     repo = indexed
     git(repo, "checkout", "-b", "feature/dirty")
     patch = patch_file(CORE_WITH_SHOUT, repo=repo)
@@ -413,28 +414,29 @@ def test_apply_on_dirty_tree_never_loses_the_users_uncommitted_edit(
 
     (repo / CORE).write_text(USER_EDIT_FAR, encoding="utf-8")
     assert porcelain(repo) == f" M {CORE}\n", porcelain(repo)
+    commits_before = commit_count(repo)
 
-    applied = runner.invoke(app, ["apply", "1", "--yes", "--commit"])
+    refused = runner.invoke(app, ["apply", "1", "--yes", "--commit"])
+    assert refused.exit_code == 2, refused.output
+    assert "Error:" in refused.output
+    assert "uncommitted" in refused.output
+    assert CORE in refused.output
+
+    # nothing was applied: the file is exactly the user's edit, no new commit,
+    # the proposal is still proposed
+    assert (repo / CORE).read_bytes() == USER_EDIT_FAR.encode("utf-8")
+    assert porcelain(repo) == f" M {CORE}\n", porcelain(repo)
+    assert commit_count(repo) == commits_before
+    assert cli_store.get_proposal(1).status == "proposed"
+
+    # without --commit a dirty tree may still be applied onto, and the user's
+    # uncommitted edit survives on disk
+    applied = runner.invoke(app, ["apply", "1", "--yes"])
+    assert applied.exit_code == 0, applied.output
     on_disk = core_text(repo)
-
-    # the user's own edit is still there, whatever the CLI decided to do
-    assert "(user WIP)" in on_disk, on_disk
-    assert applied.exit_code in (0, 2), applied.output
-
-    if applied.exit_code == 0:
-        # accepted: the proposal's change is on disk too, and the commit that was
-        # made contains both the proposal and the user's work (nothing discarded)
-        assert "OK" in applied.output
-        assert "def shout" in on_disk
-        committed = core_text(repo, "HEAD")
-        assert "(user WIP)" in committed and "def shout" in committed
-        assert porcelain(repo) == ""
-    else:
-        # refused cleanly: nothing applied, the user's edit is still uncommitted
-        assert "Error:" in applied.output
-        assert "def shout" not in on_disk
-        assert on_disk == USER_EDIT_FAR
-        assert porcelain(repo) == f" M {CORE}\n"
+    assert "(user WIP)" in on_disk and "def shout" in on_disk
+    assert commit_count(repo) == commits_before, "--commit was not asked for, none was made"
+    assert cli_store.get_proposal(1).status == "tests_passed"
 
 
 def test_apply_rejected_when_user_edit_overlaps_the_patch_context(
