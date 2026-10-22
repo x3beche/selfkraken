@@ -1300,9 +1300,10 @@ class MainWindow(QMainWindow):
         )
         diff_pointer.setAccessibleName("Where the diff is shown")
 
-        # Two columns, not one row: three checkboxes side by side need ~336px,
-        # which is wider than the review dock at 1024px and clipped "Keep on
-        # failure" to "Keep on failur".  Two columns stay compact and always fit.
+        # One checkbox per row, not two columns: two columns of "Commit on
+        # success" + "Keep on failure" need ~330px at 9.5pt but ~440px with
+        # Windows' wider UI font metrics, which is more than the review dock has
+        # at 1024px (test_review_pane_children_never_overflow_their_dock).
         option_grid = QGridLayout()
         option_grid.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
         option_grid.setHorizontalSpacing(SPACE_8)
@@ -1321,17 +1322,21 @@ class MainWindow(QMainWindow):
             "Leave the change in the working tree even when tests fail "
             "(no automatic rollback)"
         )
-        for position, box in enumerate(
+        for row, box in enumerate(
             (self.tests_check, self.commit_check, self.keep_check)
         ):
             box.setAccessibleName(box.text().replace("&", ""))
-            option_grid.addWidget(box, position // 2, position % 2)
+            option_grid.addWidget(box, row, 0)
         option_grid.setColumnStretch(0, 1)
-        option_grid.setColumnStretch(1, 1)
 
-        button_row = QHBoxLayout()
+        # Two rows of two, not one row of three: Apply + Reject + Revert plus the
+        # busy bar need ~440px with Windows' wider UI font, more than the review
+        # dock has at 1024px.  A 2x2 grid keeps each row under the dock width on
+        # every platform (see test_review_pane_children_never_overflow_their_dock).
+        button_row = QGridLayout()
         button_row.setContentsMargins(MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED, MARGIN_NESTED)
-        button_row.setSpacing(SPACE_6)
+        button_row.setHorizontalSpacing(SPACE_6)
+        button_row.setVerticalSpacing(SPACE_4)
         self.apply_button = QPushButton("Apply")
         self.apply_button.setToolTip(
             "Apply the diff with git apply, run tests, roll back automatically on failure"
@@ -1353,9 +1358,12 @@ class MainWindow(QMainWindow):
         self.detail_busy = BusyBar(width=64)
         for button in (self.apply_button, self.reject_button, self.revert_button):
             button.setEnabled(False)
-            button_row.addWidget(button)
-        button_row.addWidget(self.detail_busy)
-        button_row.addStretch(1)
+        button_row.addWidget(self.apply_button, 0, 0)
+        button_row.addWidget(self.reject_button, 0, 1)
+        button_row.addWidget(self.revert_button, 1, 0)
+        button_row.addWidget(self.detail_busy, 1, 1)
+        button_row.setColumnStretch(0, 1)
+        button_row.setColumnStretch(1, 1)
 
         detail_layout.addWidget(rationale_caption)
         detail_layout.addWidget(self.rationale_edit)

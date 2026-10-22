@@ -944,6 +944,26 @@ def _mb_experiment(demo: _DemoGit) -> None:
     demo.checkout("main")
 
 
+def _rmtree(path: Path) -> None:
+    """Delete a demo directory, read-only git objects included.
+
+    Git marks its object files read-only on Windows, where ``shutil.rmtree``
+    then stops with "Access is denied"; clear the flag and retry that entry.
+    """
+
+    def _retry(func, target, _exc):  # type: ignore[no-untyped-def]
+        try:
+            os.chmod(target, 0o700)
+        except OSError:
+            pass
+        func(target)
+
+    if os.name == "nt":
+        shutil.rmtree(path, onexc=_retry)
+    else:
+        shutil.rmtree(path)
+
+
 def _mb_add_origin(demo: _DemoGit, origin: Path) -> None:
     """Create the bare remote inside the data dir and push everything to it.
 
@@ -954,7 +974,7 @@ def _mb_add_origin(demo: _DemoGit, origin: Path) -> None:
     origin = Path(origin)
     if origin.exists():
         if origin.is_dir() and (origin / SAMPLE_MARKER).is_file():
-            shutil.rmtree(origin)
+            _rmtree(origin)
         elif origin.is_dir() and not any(origin.iterdir()):
             pass  # empty directory from a half-finished run: fill it
         else:
@@ -1079,7 +1099,7 @@ def _remove_sample_dir(target: Path) -> None:
                 f"{SAMPLE_LABEL} refusing to delete {target.name}: "
                 f"no {SAMPLE_MARKER} marker, so it may not be ours"
             )
-        shutil.rmtree(target)
+        _rmtree(target)
     elif target.exists():
         raise ValidationError(
             f"{SAMPLE_LABEL} refusing to delete {target.name}: it is not a directory"

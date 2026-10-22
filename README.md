@@ -37,7 +37,7 @@ skraken doctor
 
 Binaries are unsigned: macOS may need `xattr -dr com.apple.quarantine skraken-*`
 after unpacking. The standalone CLI is core-only — `skraken gui` still needs the
-GUI build or the `[gui]` extra.
+GUI build or the `[gui]` extra. Bundled third-party licences: [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## What it is — and what it is not
 

@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Bundled third-party components keep their own licences:
-
-- Monaco Editor (selfkraken/gui/monaco): MIT, Copyright (c) Microsoft
-  Corporation. See selfkraken/gui/monaco/LICENSE and ThirdPartyNotices.txt.

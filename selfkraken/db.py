@@ -11,6 +11,7 @@ before they reach ``MATCH``, so raw user input is never part of SQL syntax.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections.abc import Iterator, Sequence
@@ -440,12 +441,13 @@ class Store:
 
     def find_repo_by_path(self, path: Path) -> Repo | None:
         """The registered repo whose path equals ``path`` or is an ancestor of it."""
-        target = str(Path(path).resolve())
+        target = os.path.normcase(str(Path(path).resolve()))
+        sep = os.sep
         best: tuple[int, Repo] | None = None
         for row in self._query("SELECT * FROM repos ORDER BY id"):
             repo = _repo_from(row)
-            root = str(Path(repo.path).resolve())
-            if target == root or target.startswith(root.rstrip("/") + "/"):
+            root = os.path.normcase(str(Path(repo.path).resolve()))
+            if target == root or target.startswith(root.rstrip(sep) + sep):
                 if best is None or len(root) > best[0]:
                     best = (len(root), repo)
         return None if best is None else best[1]
