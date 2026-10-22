@@ -49,8 +49,20 @@ from selfkraken.gui.theme import (
     resolve as resolve_palette,
 )
 
-#: where the vendored editor lives (``vs/`` + ``editor.html`` + licences)
-MONACO_DIR = Path(__file__).resolve().parent / "monaco"
+def _monaco_dir() -> Path:
+    """Where the vendored editor lives (``vs/`` + ``editor.html`` + licences).
+
+    Source and wheel installs keep it beside this module. A PyInstaller bundle
+    carries it as data under ``_MEIPASS`` instead, because frozen modules have no
+    real directory of their own.
+    """
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        return Path(bundle) / "selfkraken" / "gui" / "monaco"
+    return Path(__file__).resolve().parent / "monaco"
+
+
+MONACO_DIR = _monaco_dir()
 EDITOR_PAGE = MONACO_DIR / "editor.html"
 
 #: ``SK_GUI_NO_WEBENGINE=1`` forces the plain viewer; ``SK_GUI_FORCE_WEBENGINE=1``

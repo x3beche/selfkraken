@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Vendored, minified editor build: never diff or count it as our code.
+selfkraken/gui/monaco/** linguist-vendored linguist-generated=true -diff
+
+# Binary-ish release inputs.
+*.whl binary
+*.tar.gz binary
+*.png binary

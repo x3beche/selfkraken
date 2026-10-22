@@ -1,0 +1,161 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    name: wheel + sdist
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tests before publishing
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libdbus-1-3 libnss3
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,gui]"
+          python -m pytest -q
+      - name: build
+        run: |
+          python -m pip install build
+          python -m build --outdir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-python
+          path: dist/*
+          if-no-files-found: error
+
+  cli:
+    name: cli (${{ matrix.slug }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, slug: linux-x86_64 }
+          - { os: macos-14, slug: macos-arm64 }
+          - { os: macos-13, slug: macos-x86_64, optional: true }
+          - { os: windows-2022, slug: windows-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pyinstaller
+      - name: build
+        run: python -m PyInstaller --noconfirm --clean packaging/selfkraken-cli.spec
+      - name: smoke test
+        shell: bash
+        run: |
+          BIN="dist/skraken"
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          SK_DATA_DIR="$RUNNER_TEMP/skdata" "$BIN" doctor
+      - name: rename
+        shell: bash
+        run: |
+          SRC="dist/skraken"
+          [ -f "$SRC.exe" ] && mv "$SRC.exe" "dist/skraken-${{ matrix.slug }}.exe" || mv "$SRC" "dist/skraken-${{ matrix.slug }}"
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.slug }}
+          path: dist/skraken-*
+          if-no-files-found: error
+
+  gui:
+    name: gui (${{ matrix.slug }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, slug: linux-x86_64 }
+          - { os: macos-14, slug: macos-arm64 }
+          - { os: macos-13, slug: macos-x86_64, optional: true }
+          - { os: windows-2022, slug: windows-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[gui]" pyinstaller
+      - name: build
+        run: python -m PyInstaller --noconfirm --clean packaging/selfkraken-gui.spec
+      - name: archive (linux)
+        if: runner.os == 'Linux'
+        run: tar -czf "skraken-gui-${{ matrix.slug }}.tar.gz" -C dist skraken-gui
+      - name: archive (macos)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/skraken-gui "skraken-gui-${{ matrix.slug }}.zip"
+      - name: archive (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist\skraken-gui -DestinationPath "skraken-gui-${{ matrix.slug }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-${{ matrix.slug }}
+          path: skraken-gui-${{ matrix.slug }}.*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: [wheel, cli, gui]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          ls -lh
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## Install
+
+            **Python (any OS):**
+            ```sh
+            pip install selfkraken-*.whl
+            skraken doctor
+            ```
+
+            **Standalone CLI** — no Python needed, single file:
+            ```sh
+            chmod +x skraken-linux-x86_64 && ./skraken-linux-x86_64 doctor
+            ```
+
+            **Desktop app** — unpack the archive, run `skraken-gui/skraken-gui`
+            (`skraken-gui\skraken-gui.exe` on Windows). Qt's WebEngine needs
+            `libnss3`, `libxkbcommon0` and `libegl1` on Linux.
+
+            Binaries are unsigned: on macOS, `xattr -dr com.apple.quarantine` after
+            unpacking if Gatekeeper complains. Verify downloads against `SHA256SUMS`.

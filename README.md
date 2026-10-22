@@ -1,5 +1,10 @@
 # selfkraken
 
+[![ci](https://github.com/x3beche/selfkraken/actions/workflows/ci.yml/badge.svg)](https://github.com/x3beche/selfkraken/actions/workflows/ci.yml)
+[![release](https://github.com/x3beche/selfkraken/actions/workflows/release.yml/badge.svg)](https://github.com/x3beche/selfkraken/releases/latest)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python 3.12](https://img.shields.io/badge/python-3.12-3776ab.svg)](pyproject.toml)
+
 A private, single-user, repository-local Git assistant — a personal replacement
 for GitKraken's core loop:
 
@@ -8,6 +13,31 @@ proposal → review → apply → run tests → keep or roll back → every step
 in SQLite.**
 
 Python 3.12 + Typer + SQLite. Small, local, honest.
+
+## Install
+
+Everything is built by CI and attached to
+[the latest release](https://github.com/x3beche/selfkraken/releases/latest)
+(`SHA256SUMS` included):
+
+| What | File | Needs |
+| --- | --- | --- |
+| Python package (all OSes) | `selfkraken-0.1.0-py3-none-any.whl` | Python 3.12 |
+| Standalone CLI | `skraken-linux-x86_64`, `skraken-macos-{arm64,x86_64}`, `skraken-windows-x86_64.exe` | nothing |
+| Desktop app (Qt + Monaco) | `skraken-gui-<os>-<arch>.{tar.gz,zip}` | nothing; Linux wants `libnss3`, `libxkbcommon0`, `libegl1` |
+
+```bash
+# CLI, no Python needed
+chmod +x skraken-linux-x86_64 && ./skraken-linux-x86_64 doctor
+
+# or the package
+pip install selfkraken-0.1.0-py3-none-any.whl   # add [gui] extra for the desktop app
+skraken doctor
+```
+
+Binaries are unsigned: macOS may need `xattr -dr com.apple.quarantine skraken-*`
+after unpacking. The standalone CLI is core-only — `skraken gui` still needs the
+GUI build or the `[gui]` extra.
 
 ## What it is — and what it is not
 
@@ -31,7 +61,7 @@ It is **not**:
 ## Quick start
 
 ```bash
-git clone <your-repo-url> selfkraken && cd selfkraken
+git clone https://github.com/x3beche/selfkraken && cd selfkraken
 scripts/install.sh            # creates .venv (needs python3.12), installs, makes .env
 
 .venv/bin/skraken doctor      # shows data path, DB status, git, model mode
