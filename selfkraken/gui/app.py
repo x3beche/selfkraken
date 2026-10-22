@@ -178,6 +178,8 @@ LOG_DOCK_MAX_ROWS = 6
 LOG_DOCK_MIN_HEIGHT = 76
 #: smallest window the layout is designed for (the 1024x700 check)
 MIN_WINDOW_WIDTH = 1024
+#: the design minimum's height, so the 1024x700 check is what the window states
+MIN_WINDOW_HEIGHT = 700
 
 # --------------------------------------------------------------------------- #
 # the code tabs: proposal diff + opened files, both Monaco
@@ -718,6 +720,13 @@ class MainWindow(QMainWindow):
         self._set_tab_order()
         if not self._restore_geometry():
             self.resize(*WINDOW_SIZE)
+
+        # The layout's own hint is ~1040 (two docks plus the tab pane), and the
+        # macOS backend turns that hint into a hard minimum of its own (~1047),
+        # which would leave the window unable to reach the 1024 it is designed
+        # for. State the design minimum instead; the tests then check that
+        # nothing clips when it is actually used.
+        self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
         self.refresh()
 
