@@ -22,7 +22,7 @@ Everything is built by CI and attached to
 
 | What | File | Needs |
 | --- | --- | --- |
-| Python package (all OSes) | `selfkraken-0.1.0-py3-none-any.whl` | Python 3.12 |
+| Python package (all OSes) | `selfkraken-0.1.1-py3-none-any.whl` | Python 3.12 |
 | Standalone CLI | `skraken-linux-x86_64`, `skraken-macos-{arm64,x86_64}`, `skraken-windows-x86_64.exe` | nothing |
 | Desktop app (Qt + Monaco) | `skraken-gui-<os>-<arch>.{tar.gz,zip}` | nothing; Linux wants `libnss3`, `libxkbcommon0`, `libegl1` |
 
@@ -30,8 +30,13 @@ Everything is built by CI and attached to
 # CLI, no Python needed
 chmod +x skraken-linux-x86_64 && ./skraken-linux-x86_64 doctor
 
+# the desktop build is both: no flag opens the window, -c runs the CLI
+./skraken-gui/skraken-gui                    # window
+./skraken-gui/skraken-gui -c doctor          # same as `skraken doctor`
+./skraken-gui/skraken-gui -c graph --repo .  # any command, any flag
+
 # or the package
-pip install selfkraken-0.1.0-py3-none-any.whl   # add [gui] extra for the desktop app
+pip install selfkraken-0.1.1-py3-none-any.whl   # add [gui] extra for the desktop app
 skraken doctor
 ```
 

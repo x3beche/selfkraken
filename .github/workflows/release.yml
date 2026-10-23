@@ -105,6 +105,12 @@ jobs:
           python -m pip install -e ".[gui]" pyinstaller
       - name: build
         run: python -m PyInstaller --noconfirm --clean packaging/selfkraken-gui.spec
+      - name: smoke test the CLI side of the GUI build (linux)
+        if: runner.os == 'Linux'
+        env:
+          SK_DATA_DIR: ${{ runner.temp }}/skdata
+          QT_QPA_PLATFORM: offscreen
+        run: dist/skraken-gui/skraken-gui -c doctor
       - name: archive (linux)
         if: runner.os == 'Linux'
         run: tar -czf "skraken-gui-${{ matrix.slug }}.tar.gz" -C dist skraken-gui
@@ -158,6 +164,10 @@ jobs:
             **Desktop app** — unpack the archive, run `skraken-gui/skraken-gui`
             (`skraken-gui\skraken-gui.exe` on Windows). Qt's WebEngine needs
             `libnss3`, `libxkbcommon0` and `libegl1` on Linux.
+
+            The desktop build is also the CLI: `skraken-gui -c doctor` runs the
+            same command as `skraken doctor` (add `-c`/`--cli` before any
+            command and its flags). One download, both modes.
 
             Binaries are unsigned: on macOS, `xattr -dr com.apple.quarantine` after
             unpacking if Gatekeeper complains. Verify downloads against `SHA256SUMS`.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "selfkraken"
-version = "0.1.0"
+version = "0.1.1"
 description = "Private, repository-local Git assistant: index a repo, ask one model for a diff, apply, test, and record every change."
 readme = "README.md"
 requires-python = ">=3.12"

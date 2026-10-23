@@ -2,7 +2,7 @@
 
 import sys
 
-from selfkraken.gui.app import run
+from selfkraken.gui.entry import main
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(main())

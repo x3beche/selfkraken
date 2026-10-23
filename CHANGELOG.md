@@ -3,6 +3,14 @@
 All notable changes to selfkraken. Dates are UTC; versions follow
 [semver](https://semver.org).
 
+## v0.1.1 — 2026-10-23
+
+- **The desktop build is also the CLI.** `skraken-gui` opens the window as
+  before; `skraken-gui -c <command>` (or `--cli`) runs any CLI command, so one
+  download covers both. On Windows the windowed build attaches to the calling
+  console, because `stdout` does not exist there otherwise.
+- Version bumped so the release assets and the wheel agree.
+
 ## v0.1.0 — 2026-10-06
 
 First public release.
