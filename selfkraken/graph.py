@@ -106,7 +106,11 @@ def _parse_ref_entries(raw: str) -> list[str]:
 
 
 def read_commits(
-    repo_path: Path, *, limit: int = 200, all_refs: bool = True
+    repo_path: Path,
+    *,
+    limit: int = 200,
+    all_refs: bool = True,
+    ref: str | None = None,
 ) -> list[Commit]:
     """Return commits newest-first in topological order (parents after children).
 
@@ -114,7 +118,10 @@ def read_commits(
     """
     fmt = "%x1f".join(["%H", "%h", "%P", "%ad", "%D", "%an", "%s"]) + "%x00"
     args = ["log"]
-    if all_refs:
+    if ref:
+        # one branch's history, newest first
+        args.append(str(ref))
+    elif all_refs:
         args.append("--all")
     args += [
         "--topo-order",

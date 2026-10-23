@@ -276,16 +276,18 @@ scripts/install.sh                 # installs '.[dev,gui]' (includes PySide6)
 .venv/bin/skraken gui --theme light
 ```
 
-**The shell is one workspace.** A single 44px top bar carries the wordmark,
-the page strip (**Graph · Proposals · Review · Settings**), the repository
-selector and the model state; one row of actions sits under it (**Add Repo**,
-**Index**, **Run Tests**, **Export/Import**, **Sample**, **More**).
+**The shell is one workspace.** A single 44px top bar carries the wordmark and
+the page strip (**Graph · Proposals · Review · Settings**); one row of actions
+sits under it (**Add Repo**, **Index**, **Run Tests**, **Export/Import**,
+**Sample**, **More**). The repository you are looking at, and the model state,
+are not up there: the picker is the first thing in the left column, and the
+model answer sits in the status bar, out of the way.
 
 Below that, the Graph page is three columns, splitter-resizable:
 
 | Column | What it holds |
 | --- | --- |
-| **Explorer** (left) | one **search box** over both lists, then **Files** and **Branches** as tabs: files touched by the selection are marked `✎ changed`, double-click opens one read-only in its own tab |
+| **Explorer** (left) | the **repository picker**, a **search box** over both lists, then **Files** and **Branches** as tabs: files touched by the selection are marked `✎ changed`, double-click opens one read-only in its own tab; **clicking a branch narrows the middle column to that branch's history**, with a ✕ on the strip above the graph to go back to all of them |
 | **Commits** (middle) | the **commit graph**: painted lanes, merge rings, ref badges like `HEAD`, `main ↑2`, `tag: v0.1.0`, `feature/login ⇄ origin` |
 | **Diff** (right) | **Monaco**, always: click a commit and its patch appears file by file; select a proposal and its diff replaces it. There is no separate Changes tab — the diff is a column, not a place you navigate to |
 

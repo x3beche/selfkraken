@@ -559,6 +559,12 @@ class BranchListModel(QAbstractListModel):
         self._palette = palette
         self._items: list[BranchItem] = []
 
+    def item_at(self, row: int):
+        """The BranchItem at ``row`` (None when the model has no such row)."""
+        if 0 <= row < len(self._items):
+            return self._items[row]
+        return None
+
     def set_branches(self, branches: Sequence[Branch]) -> None:
         self.beginResetModel()
         self._items = [BranchItem(b) for b in branches]

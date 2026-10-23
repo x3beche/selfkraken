@@ -895,3 +895,31 @@ def test_settings_appearance_switches_theme_and_remembers_it(
         assert reopened.palette.name == "light", "the choice did not survive a start"
     finally:
         reopened.close()
+
+
+def test_selecting_a_branch_filters_the_middle_column(
+    qapp, gui_settings, no_dialogs, tmp_path
+) -> None:
+    """The branch list is a control, not decoration: it narrows the graph."""
+    from fixtures_git import make_multibranch_repo
+
+    from selfkraken.gui.app import MainWindow
+
+    repo = make_multibranch_repo(tmp_path / "demo")
+    window = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        window.add_repo(repo, None)
+        window.index_repo()
+        assert window.graph_view.table_model.rowCount() > 3
+        assert window.branch_model.rowCount() > 0
+
+        window.branches_view.setCurrentIndex(window.branches_proxy.index(0, 0))
+        assert window._graph_ref, "picking a branch sets the filter"
+        assert window.branch_strip.isVisibleTo(window)
+        assert window.branch_strip_label.text() == window._graph_ref
+
+        window._clear_branch_filter()
+        assert window._graph_ref is None
+        assert not window.branch_strip.isVisibleTo(window)
+    finally:
+        window.close()
