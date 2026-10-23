@@ -864,3 +864,34 @@ def test_core_imports_do_not_pull_pyside6() -> None:
         timeout=120,
         env=env,
     )
+
+
+def test_settings_appearance_switches_theme_and_remembers_it(
+    qapp, gui_settings, no_dialogs
+) -> None:
+    """Settings > Appearance repaints the window now and survives a restart."""
+    import json
+
+    from selfkraken.gui.app import MainWindow, WINDOW_STATE_FILENAME
+
+    window = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
+    try:
+        assert window.palette.name == "dark"
+        window.set_theme("light")
+        assert window.palette.name == "light"
+        assert window.theme_cards.checkedButton().text() == "Light"
+
+        stored = json.loads(
+            (Path(gui_settings.data_dir) / WINDOW_STATE_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert stored["theme"] == "light"
+    finally:
+        window.close()
+
+    reopened = MainWindow(run_jobs_inline=True, settings=gui_settings)
+    try:
+        assert reopened.palette.name == "light", "the choice did not survive a start"
+    finally:
+        reopened.close()

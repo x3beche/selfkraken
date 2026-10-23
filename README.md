@@ -292,6 +292,19 @@ shows every step, newest first. Everything slow runs in worker threads; the
 window never freezes, and errors come back as plain `Error:` text — never
 tracebacks.
 
+### Themes and the Settings page
+
+**Settings → Appearance** offers **Dark**, **Light** and **System** (follows the
+desktop's own preference). The choice applies the moment it is picked — no
+restart — and is remembered in `gui-window.json` next to the database, so the
+window comes back in the theme you left it in. The same page carries an
+**About** section: version, Python, Qt, and where the data and database live.
+
+The interface is set in **Switzer**, with **IBM Plex Mono** for code, paths and
+the activity log. Both travel with the package (and the GUI builds), so the
+window looks the same on Linux, macOS and Windows instead of picking up whatever
+the desktop's default font happens to be.
+
 ### The code viewer: Monaco, offline
 
 Every place the GUI shows code — the proposal diff, a file opened from the tree,
@@ -364,6 +377,12 @@ Empty state with guidance:
 Light theme:
 
 ![GUI light theme](docs/screenshots/gui-light.png)
+
+Settings → Appearance, where the theme is chosen (dark and light):
+
+![Settings, appearance](docs/screenshots/settings-dark.png)
+
+![Settings, appearance in the light theme](docs/screenshots/settings-light.png)
 
 Regenerate the offscreen screenshots anytime with
 `.venv/bin/python scripts/gui_screenshots.py` (offscreen Qt, throwaway data).

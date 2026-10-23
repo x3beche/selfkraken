@@ -14,6 +14,7 @@ ROOT = Path(SPECPATH).resolve().parent
 
 datas = [
     (str(ROOT / "selfkraken" / "gui" / "monaco"), "selfkraken/gui/monaco"),
+    (str(ROOT / "selfkraken" / "gui" / "fonts"), "selfkraken/gui/fonts"),
 ]
 
 hiddenimports = (

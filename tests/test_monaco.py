@@ -649,7 +649,9 @@ def test_switching_repository_closes_file_tabs(window, git_repo, tmp_path) -> No
 
     window.add_repo(git_repo, code_test_command(git_repo))
     window.open_file_tab("calc.py")
-    assert window.tabs.count() > 3
+    from selfkraken.gui.app import PERMANENT_TABS
+
+    assert window.tabs.count() > PERMANENT_TABS
     second = tmp_path / "other-repo"
     second.mkdir()
     (second / "x.py").write_text("X = 1\n", encoding="utf-8")
@@ -659,7 +661,7 @@ def test_switching_repository_closes_file_tabs(window, git_repo, tmp_path) -> No
     git_in(second, "add", "-A")
     git_in(second, "commit", "-q", "-m", "second repo")
     window.add_repo(second, None)
-    assert window.tabs.count() == 3, "a tab of another repository is not context"
+    assert window.tabs.count() == PERMANENT_TABS, "a tab of another repository is not context"
 
 
 def test_start_hooks_drive_the_window(

@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer, Signal, qVersion
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -36,8 +37,10 @@ from PySide6.QtGui import (
     QStandardItemModel,
 )
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -50,6 +53,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QListView,
     QMainWindow,
     QMenu,
@@ -72,6 +76,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from selfkraken import __version__ as APP_VERSION
 from selfkraken import diffs, indexer, portability, sample, workflow
 from selfkraken.config import Settings, load_settings
 from selfkraken.db import Proposal, Repo, Store, TestRun
@@ -80,6 +85,7 @@ from selfkraken.graph import GraphRow, layout, list_branches, read_commits
 from selfkraken.workflow import ApplyOutcome, DEGRADED_MODE_HINT
 
 from selfkraken.gui import monaco_payload as monaco_api
+from selfkraken.gui import fonts as ui_fonts
 from selfkraken.gui.diff_view import monospace_font
 from selfkraken.gui.graph_widget import GraphView, read_commit_detail
 from selfkraken.gui.monaco_view import MonacoView
@@ -92,6 +98,8 @@ from selfkraken.gui.models import (
 )
 from selfkraken.gui.theme import (
     ACTIVITY_LOG_HEIGHT,
+    DARK,
+    LIGHT,
     BADGE_HEIGHT,
     BADGE_H_PAD,
     BADGE_RADIUS,
@@ -113,6 +121,7 @@ from selfkraken.gui.theme import (
     MONO_PT,
     PANEL_SPACING,
     PILL_HEIGHT,
+    RADIUS,
     REVIEW_DOCK_RATIO,
     ROW_HEIGHT,
     SECTION_HEADER_HEIGHT,
@@ -188,7 +197,8 @@ MIN_WINDOW_HEIGHT = 700
 TAB_GRAPH = 0
 TAB_PROPOSALS = 1
 TAB_CHANGES = 2
-PERMANENT_TABS = 3
+TAB_SETTINGS = 3
+PERMANENT_TABS = 4
 
 #: a diff is shown side by side only when the pane is at least this wide; below
 #: it the two columns would each be narrower than a line of code
@@ -671,6 +681,72 @@ def compact_item_view(view: QAbstractItemView, select_rows: bool = True) -> None
 # --------------------------------------------------------------------------- #
 # main window
 # --------------------------------------------------------------------------- #
+class ThemeCard(QAbstractButton):
+    """One theme choice: a swatch of what it looks like, and its name.
+
+    Painted rather than styled: the swatch has to show three palette tokens at
+    once, and a checked card is told by a 2px accent edge — the same signal a
+    pressed control uses elsewhere, one step louder because it is a choice.
+    """
+
+    def __init__(
+        self, label: str, palette: Palette, parent: Optional[QWidget] = None
+    ) -> None:
+        super().__init__(parent)
+        self._label = label
+        self._swatch = palette
+        # painted by paintEvent, but text()/screen readers need the real label
+        self.setText(label)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(96)
+        self.setMinimumWidth(148)
+        self.setAccessibleName(f"{label} theme")
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt name
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        outer = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(self._swatch.border), BORDER_WIDTH))
+        p.setBrush(QColor(self._swatch.window))
+        p.drawRoundedRect(outer, RADIUS, RADIUS)
+
+        swatch = QRectF(
+            outer.left() + SPACE_8, outer.top() + SPACE_8,
+            outer.width() - 2 * SPACE_8, 42,
+        )
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(self._swatch.base))
+        p.drawRoundedRect(swatch, BADGE_RADIUS, BADGE_RADIUS)
+        p.setBrush(QColor(self._swatch.stripe))
+        p.drawRoundedRect(
+            QRectF(swatch.left(), swatch.top(), swatch.width(), 11),
+            BADGE_RADIUS, BADGE_RADIUS,
+        )
+        p.setBrush(QColor(self._swatch.accent))
+        p.drawRoundedRect(QRectF(swatch.left() + SPACE_8, swatch.top() + 18, 32, 5), 2, 2)
+        p.setBrush(QColor(self._swatch.text))
+        p.drawRoundedRect(QRectF(swatch.left() + SPACE_8, swatch.top() + 28, 56, 4), 2, 2)
+
+        if self.isChecked():
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(self._swatch.accent), 2))
+            p.drawRoundedRect(outer.adjusted(1, 1, -1, -1), RADIUS, RADIUS)
+
+        font = QFont(ui_family())
+        font.setPointSizeF(FONT_PT)
+        font.setWeight(
+            QFont.Weight.DemiBold if self.isChecked() else QFont.Weight.Normal
+        )
+        p.setFont(font)
+        p.setPen(QColor(self._swatch.text if self.isChecked() else self._swatch.muted))
+        p.drawText(
+            QRectF(0, 54, self.width(), self.height() - 58),
+            int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+            self._label,
+        )
+
+
 class MainWindow(QMainWindow):
     """The selfkraken desktop window and its controller methods."""
 
@@ -685,7 +761,17 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         resolve_font_families()  # before any QFont or stylesheet is built
         self.settings = settings or load_settings()
-        self.palette: Palette = resolve(theme, prefers_dark=_system_prefers_dark())
+        # a choice made in Settings wins over the launch default; the flag only
+        # decides the very first run
+        self._theme_choice = self._stored_theme() or (theme or "auto")
+        self.palette: Palette = resolve(
+            self._theme_choice, prefers_dark=_system_prefers_dark()
+        )
+        # the stored choice may differ from the launch flag, so the window owns
+        # applying its palette; without this the stylesheet kept the flag's
+        instance = QApplication.instance()
+        if instance is not None:
+            apply_theme(instance, self.palette)
         self.store = Store(self.settings.db_path)  # UI-thread light reads only
         self.runner = JobRunner(inline=run_jobs_inline, parent=self)
         self.runner.started.connect(self._job_started)
@@ -984,6 +1070,10 @@ class MainWindow(QMainWindow):
         # -- Changes tab: the proposal diff, in Monaco -----------------------
         self.changes_page = self._build_changes_page()
         self.tabs.addTab(self.changes_page, "&Changes")
+
+        # -- Settings tab: sections on the left, the chosen one on the right --
+        self.settings_page = self._build_settings_page()
+        self.tabs.addTab(self.settings_page, "&Settings")
         self.tabs.setTabsClosable(True)  # file tabs get a close button
         self.tabs.tabCloseRequested.connect(self._close_code_tab)
         self.tabs.currentChanged.connect(self._on_centre_tab_changed)
@@ -1074,6 +1164,167 @@ class MainWindow(QMainWindow):
         self.diff_hint.setText("")
         self.diff_files.setVisible(False)
         self.diff_view.clear()
+
+    # ---------------------------------------------------------------- themes
+    def _stored_theme(self) -> Optional[str]:
+        """The theme picked in Settings last time, if the file still has one."""
+        try:
+            stored = json.loads(self._geometry_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        choice = str(stored.get("theme", "")).strip().lower()
+        return choice if choice in ("auto", "dark", "light") else None
+
+    def set_theme(self, name: str) -> None:
+        """Apply a theme now, and keep it for the next start.
+
+        Everything the window paints with holds a :class:`Palette`; so a switch
+        hands the new one to each of them and repaints, rather than rebuilding
+        the window and losing the open repository, tab and selection.
+        """
+        choice = (name or "auto").strip().lower()
+        if choice not in ("auto", "dark", "light"):
+            choice = "auto"
+        self._theme_choice = choice
+        self.palette = resolve(choice, prefers_dark=_system_prefers_dark())
+
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, self.palette)
+        self._push_palette(self)
+        group = getattr(self, "theme_cards", None)
+        if group is not None:
+            for card in group.buttons():
+                card.setChecked(card.property("theme") == choice)
+
+        graph = getattr(self, "graph_view", None)
+        if graph is not None and isinstance(getattr(graph, "palette", None), Palette):
+            graph.palette = self.palette
+            graph.viewport().update()
+        self._save_geometry()
+        self.refresh()
+
+    def _push_palette(self, root: QWidget) -> None:
+        """Hand the current palette to every widget, model and delegate below."""
+        for widget in [root, *root.findChildren(QWidget)]:
+            if isinstance(getattr(widget, "palette", None), Palette):
+                widget.palette = self.palette
+                widget.update()
+        for view in root.findChildren(QAbstractItemView):
+            model = view.model()
+            if isinstance(getattr(model, "palette", None), Palette):
+                model.palette = self.palette
+            delegate = view.itemDelegate()
+            if isinstance(getattr(delegate, "palette", None), Palette):
+                delegate.palette = self.palette
+            view.viewport().update()
+
+    # -------------------------------------------------------------- settings
+    def _build_settings_page(self) -> QWidget:
+        """Settings: sections on the left, the chosen one on the right."""
+        page = QWidget()
+        page.setObjectName("settingsPage")
+        page.setAccessibleName("Settings")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        outer.setSpacing(PANEL_SPACING)
+
+        title = QLabel("Settings")
+        font = title.font()
+        font.setPointSizeF(FONT_PT + 3)
+        font.setWeight(QFont.Weight.DemiBold)
+        title.setFont(font)
+        outer.addWidget(title)
+
+        body = QHBoxLayout()
+        body.setSpacing(SPACE_12)
+
+        self.settings_nav = QListWidget()
+        self.settings_nav.setObjectName("settingsNav")
+        self.settings_nav.setAccessibleName("Settings sections")
+        self.settings_nav.setFixedWidth(190)
+        self.settings_nav.addItems(["Appearance", "About"])
+        self.settings_nav.setCurrentRow(0)
+        body.addWidget(self.settings_nav)
+
+        self.settings_stack = QStackedWidget()
+        self.settings_stack.addWidget(self._build_appearance_section())
+        self.settings_stack.addWidget(self._build_about_section())
+        body.addWidget(self.settings_stack, 1)
+        outer.addLayout(body, 1)
+
+        self.settings_nav.currentRowChanged.connect(self.settings_stack.setCurrentIndex)
+        return page
+
+    def _build_appearance_section(self) -> QWidget:
+        section = QWidget()
+        box = QVBoxLayout(section)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(PANEL_SPACING)
+        box.addWidget(SectionHeader("Appearance", self.palette))
+
+        caption = QLabel("Theme")
+        caption.setStyleSheet(f"color: {self.palette.muted};")
+        box.addWidget(caption)
+
+        row = QHBoxLayout()
+        row.setSpacing(SPACE_8)
+        self.theme_cards = QButtonGroup(self)
+        self.theme_cards.setExclusive(True)
+        options = (
+            ("dark", "Dark", DARK),
+            ("light", "Light", LIGHT),
+            ("auto", "System", resolve("auto", prefers_dark=_system_prefers_dark())),
+        )
+        for name, label, swatch in options:
+            card = ThemeCard(label, swatch)
+            card.setProperty("theme", name)
+            card.setChecked(name == self._theme_choice)
+            card.clicked.connect(lambda _checked=False, n=name: self.set_theme(n))
+            self.theme_cards.addButton(card)
+            row.addWidget(card)
+        row.addStretch(1)
+        box.addLayout(row)
+
+        hint = QLabel(
+            "System follows the desktop's light or dark preference. "
+            "The choice is remembered next time the window opens."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {self.palette.muted};")
+        box.addWidget(hint)
+        box.addStretch(1)
+        return section
+
+    def _build_about_section(self) -> QWidget:
+        section = QWidget()
+        box = QVBoxLayout(section)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(PANEL_SPACING)
+        box.addWidget(SectionHeader("About", self.palette))
+
+        rows = (
+            ("Version", APP_VERSION),
+            ("Python", platform.python_version()),
+            ("Qt", qVersion()),
+            ("Data folder", str(self.settings.data_dir)),
+            ("Database", str(self.settings.db_path)),
+        )
+        for key, value in rows:
+            line = QWidget()
+            grid = QHBoxLayout(line)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(SPACE_8)
+            name = QLabel(key)
+            name.setFixedWidth(96)
+            name.setStyleSheet(f"color: {self.palette.muted};")
+            text = QLabel(str(value))
+            text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(name)
+            grid.addWidget(text, 1)
+            box.addWidget(line)
+        box.addStretch(1)
+        return section
 
     # -------------------------------------------------------------- left dock
     def _build_left_dock(self) -> None:
@@ -2691,6 +2942,7 @@ class MainWindow(QMainWindow):
             rect = self.geometry()
             maximised = False
         state = {
+            "theme": getattr(self, "_theme_choice", "auto"),
             "x": rect.x(),
             "y": rect.y(),
             "w": rect.width(),
@@ -2843,12 +3095,16 @@ def resolve_font_families(app: Optional[QApplication] = None) -> None:
     if instance is None:  # pragma: no cover - no Qt, nothing to resolve
         return
     if _PLATFORM_UI_FAMILY is None:
-        # the offscreen build is pinned to DejaVu (that is what the screenshots
-        # are made of); a real desktop uses its own UI font, never QFont("")
-        _PLATFORM_UI_FAMILY = (
-            UI_FONT or QFontInfo(instance.font()).family() or "Sans Serif"
-        )
-        set_mono_family(_resolve_mono_family(instance))
+        # the bundled Plex faces win wherever they can be registered: they are
+        # the families the interface is measured against, on every platform
+        if ui_fonts.load():
+            _PLATFORM_UI_FAMILY = ui_fonts.UI_FAMILY
+            set_mono_family(ui_fonts.MONO_FAMILY)
+        else:  # pragma: no cover - a build without the font files
+            _PLATFORM_UI_FAMILY = (
+                UI_FONT or QFontInfo(instance.font()).family() or "Sans Serif"
+            )
+            set_mono_family(_resolve_mono_family(instance))
     set_ui_family(_PLATFORM_UI_FAMILY)
 
 

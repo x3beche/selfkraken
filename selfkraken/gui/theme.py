@@ -98,16 +98,16 @@ IS_OFFSCREEN: Final[bool] = os.environ.get("QT_QPA_PLATFORM", "").strip().lower(
     "offscreen"
 )
 
-UI_FONT: Final[str] = "DejaVu Sans" if IS_OFFSCREEN else ""
-MONO_FONT: Final[str] = "DejaVu Sans Mono"
-#: families tried for the diff/console font when the platform has no DejaVu Mono
+UI_FONT: Final[str] = "Switzer"
+MONO_FONT: Final[str] = "IBM Plex Mono"
+#: families tried for the diff/console font when the bundled Plex Mono is absent
 MONO_FALLBACKS: Final[tuple[str, ...]] = (
-    "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", "Noto Mono", "Menlo",
-    "Consolas", "Courier New",
+    "IBM Plex Mono", "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono",
+    "Noto Mono", "Menlo", "Consolas", "Courier New",
 )
-FONT_PT: Final[float] = 9.0 if IS_OFFSCREEN else 9.5
-META_PT: Final[float] = FONT_PT - 1.0
-MONO_PT: Final[float] = 9.0
+FONT_PT: Final[float] = 9.0      # 12px: the UI's body size
+META_PT: Final[float] = 8.0     # 10.5px: section labels, counters, hints
+MONO_PT: Final[float] = 8.5     # 11px: paths, log lines, diff
 
 # --------------------------------------------------------------------------- #
 # resolved font families
@@ -193,6 +193,11 @@ class Palette:
     err: str
     warning: str
     error_bg: str
+    #: the two interaction fills every hover/pressed state uses
+    hover: str
+    pressed: str
+    #: the application's own red: the wordmark, the pen of a live mark
+    pen: str
     lanes: tuple[str, ...]
     #: proposal status -> (foreground, background)
     status: dict[str, tuple[str, str]] = field(default_factory=dict)
@@ -204,83 +209,97 @@ class Palette:
 
 DARK: Final[Palette] = Palette(
     name="dark",
-    window="#161b22",
-    panel="#1c222c",
-    base="#0f141a",
-    surface="#141a22",
-    stripe="#1a212a",
-    text="#e6edf7",
-    muted="#9aa6b5",
-    border="#303a46",
-    accent="#54a6ff",
-    accent_text="#0c1118",
-    selection_bg="#2a4d7a",
-    selection_text="#f0f6ff",
-    ok="#4ac26b",
-    err="#ff7b72",
-    warning="#e3b341",
-    error_bg="#3a1113",
-    lanes=LANE_COLORS_DARK,
+    # flat greys, one blue: panels and page are the same tone and the 1px line
+    # is what separates them, so nothing reads as a raised card.
+    window="#444444",
+    panel="#444444",
+    base="#333333",
+    surface="#333333",
+    stripe="#3d3d3d",
+    text="#dddddd",
+    muted="#a0a0a0",
+    border="#5a5a5a",
+    accent="#53a0e3",
+    accent_text="#12222e",
+    selection_bg="#48627a",
+    selection_text="#ffffff",
+    ok="#5c8a5c",
+    err="#cc3333",
+    warning="#e8a735",
+    error_bg="#3a2323",
+    hover="#686868",
+    pressed="#5e5e5e",
+    pen="#ff2d3f",
+    lanes=(
+        "#4a90d9", "#e8a735", "#5bb85f", "#c964a8",
+        "#3fa9a0", "#e8615a", "#7a6bd6", "#8a9a5b",
+    ),
     status={
-        "proposed": ("#79c0ff", "#0c2d52"),
-        "applied": ("#f0883e", "#3d2307"),
-        "tests_passed": ("#56d364", "#0f2d16"),
-        "tests_failed": ("#ff9d95", "#490202"),
-        "rejected": ("#aab5c3", "#2a313a"),
-        "reverted": ("#d2a8ff", "#271a45"),
+        "proposed": ("#79b8ea", "#26384a"),
+        "applied": ("#e8a735", "#3a2c12"),
+        "tests_passed": ("#8fbf8f", "#1e2d1e"),
+        "tests_failed": ("#e88a8a", "#3a1c1c"),
+        "rejected": ("#b4b4b4", "#3a3a3a"),
+        "reverted": ("#a79cc9", "#2c2638"),
     },
     badge={
-        "head": ("#0c1118", "#54a6ff", "#54a6ff"),
-        "local": ("#56d364", "#12261e", "#238636"),
-        "remote": ("#9aa6b5", "#1c222c", "#444c56"),
-        "tag": ("#e3b341", "#2d2305", "#9e6a03"),
+        "head": ("#12222e", "#53a0e3", "#53a0e3"),
+        "local": ("#9ccf9c", "#26332a", "#3f5f3f"),
+        "remote": ("#c4c4c4", "#3a3a3a", "#5a5a5a"),
+        "tag": ("#e8a735", "#3a2c12", "#7a5a1f"),
     },
     diff={
-        "add": ("#4ac26b", "#0d2818"),
-        "del": ("#f85149", "#2d0e0f"),
-        "hunk": ("#54a6ff", "#0c2030"),  # accent, not a second hue
-        "header": ("#e6edf7", ""),
+        "add": ("#9ccf9c", "#252f25"),
+        "del": ("#e88a8a", "#332020"),
+        "hunk": ("#53a0e3", "#26323c"),  # the accent, not a third hue
+        "header": ("#dddddd", ""),
     },
 )
 
 LIGHT: Final[Palette] = Palette(
     name="light",
-    window="#f2f4f8",
-    panel="#ffffff",
-    base="#ffffff",
-    surface="#ffffff",
-    stripe="#f6f8fa",
-    text="#1f2328",
-    muted="#57606a",
-    border="#d0d7de",
-    accent="#0550ae",
-    accent_text="#ffffff",
-    selection_bg="#cce5ff",
-    selection_text="#0a3069",
-    ok="#1a7f37",
-    err="#cf222e",
-    warning="#9a6700",
-    error_bg="#ffebe9",
-    lanes=LANE_COLORS_LIGHT,
+    window="#eceef1",
+    panel="#eceef1",
+    base="#f6f7f9",
+    surface="#f6f7f9",
+    stripe="#e4e7eb",
+    text="#232a31",
+    muted="#5e6873",
+    border="#c3c9d1",
+    accent="#1d6fb8",
+    accent_text="#f2f8ff",
+    selection_bg="#bcd6ee",
+    selection_text="#12222e",
+    ok="#3d7a3d",
+    err="#b52a2a",
+    warning="#a86a06",
+    error_bg="#f7dede",
+    hover="#dfe3e8",
+    pressed="#d2d8df",
+    pen="#e00d22",
+    lanes=(
+        "#2f6fa8", "#a86a06", "#3d7a3d", "#9a4b80",
+        "#2f7f78", "#b52a2a", "#5b4fb0", "#6a7440",
+    ),
     status={
-        "proposed": ("#0550ae", "#ddeeff"),
-        "applied": ("#9a4a09", "#ffe8d2"),
-        "tests_passed": ("#116329", "#d9fbe0"),
-        "tests_failed": ("#8b1507", "#ffdede"),
-        "rejected": ("#57606a", "#e7ebf0"),
-        "reverted": ("#6639ba", "#eee7fa"),
+        "proposed": ("#1d4f7a", "#d6e6f4"),
+        "applied": ("#7a4c04", "#f6e6cc"),
+        "tests_passed": ("#2c5c2c", "#dcecdc"),
+        "tests_failed": ("#8c2020", "#f7dede"),
+        "rejected": ("#4e5761", "#e2e5e9"),
+        "reverted": ("#4b3f75", "#e6e2f2"),
     },
     badge={
-        "head": ("#ffffff", "#0550ae", "#0550ae"),
-        "local": ("#116329", "#dafbe1", "#4ac26b"),
-        "remote": ("#57606a", "#f2f4f8", "#afb8c1"),
-        "tag": ("#7d5a00", "#fff8c5", "#d4a72e"),
+        "head": ("#f2f8ff", "#1d6fb8", "#1d6fb8"),
+        "local": ("#2c5c2c", "#dcecdc", "#9cc09c"),
+        "remote": ("#4e5761", "#eef0f3", "#c3c9d1"),
+        "tag": ("#7a4c04", "#f6e6cc", "#d3ae72"),
     },
     diff={
-        "add": ("#116329", "#dafbe1"),
-        "del": ("#cf222e", "#ffebe9"),
-        "hunk": ("#0550ae", "#ddf4ff"),  # accent
-        "header": ("#1f2328", ""),
+        "add": ("#2c5c2c", "#dcecdc"),
+        "del": ("#8c2020", "#f7dede"),
+        "hunk": ("#1d6fb8", "#dbe8f4"),  # the accent
+        "header": ("#232a31", ""),
     },
 )
 
@@ -339,6 +358,7 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     QWidget {{
         color: {p.text};
         background: {p.window};
+        font-family: "{UI_FONT}";
     }}
     QToolTip {{
         background: {p.panel}; color: {p.text}; border: {edge};
@@ -393,13 +413,14 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
 
     /* ------------------------------------------------------------ buttons */
     QPushButton {{
-        background: {p.panel}; color: {p.text};
+        background: {p.surface}; color: {p.text};
         border: {edge}; border-radius: {RADIUS}px;
         padding: {SPACE_2}px {SPACE_8}px; min-height: {BUTTON_INNER}px;
     }}
-    QPushButton:hover {{ border-color: {p.accent}; }}
-    QPushButton:pressed {{ background: {p.selection_bg}; color: {p.selection_text}; }}
+    QPushButton:hover {{ background: {p.hover}; border-color: {p.border}; }}
+    QPushButton:pressed {{ background: {p.pressed}; }}
     QPushButton:default {{ background: {p.accent}; color: {p.accent_text}; border-color: {p.accent}; }}
+    QPushButton:default:hover {{ background: {p.accent}; border-color: {p.text}; }}
     QPushButton:disabled {{ color: {p.muted}; background: {p.window}; border-color: {p.border}; }}
     QPushButton:focus {{ border: {BORDER_WIDTH}px solid {p.accent}; }}
 
@@ -454,14 +475,22 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
        the central pane: only the central pane draws the dividing line, so two
        framed widgets never meet as a double border */
     QTabWidget#leftTabs::pane {{ border: none; }}
+    /* Tabs are pills in the top bar, not folders: no outline of their own,
+       a soft fill on hover, and the open one told by brightness and weight. */
     QTabBar::tab {{
-        background: {p.panel}; color: {p.muted};
-        border: {edge}; border-bottom: none;
-        border-top-left-radius: {RADIUS}px; border-top-right-radius: {RADIUS}px;
-        padding: {SPACE_2}px {CELL_PADDING}px; min-height: {ROW_HEIGHT - 2 * SPACE_2 - BORDER_WIDTH}px;
+        background: transparent; color: {p.muted};
+        border: {BORDER_WIDTH}px solid transparent;
+        border-radius: {RADIUS}px;
+        padding: {SPACE_4}px {SPACE_12}px;
+        margin-right: {SPACE_2}px;
+        min-height: {ROW_HEIGHT - 2 * SPACE_4 - BORDER_WIDTH}px;
+        font-weight: 500;
     }}
-    QTabBar::tab:selected {{ background: {p.base}; color: {p.text}; }}
-    QTabBar::tab:hover:!selected {{ color: {p.text}; }}
+    QTabBar::tab:hover:!selected {{ background: {p.hover}; color: {p.text}; }}
+    QTabBar::tab:selected {{
+        background: {p.hover}; color: {p.text};
+        font-weight: 600;
+    }}
     /* the close box on a file tab: a quiet glyph in the tab's own colour, never
        a filled red button — it sits next to text, not in a dialog title bar */
     QTabBar QToolButton#tabClose {{
