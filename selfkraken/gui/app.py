@@ -1215,6 +1215,62 @@ class MainWindow(QMainWindow):
         self.proposals_stack.addWidget(self.proposals_empty)     # index 1
         self.proposals_stack.addWidget(self.proposals_table)     # index 2
 
+        # the status column is filterable: one chip per state, plus All
+        self.proposals_proxy = QSortFilterProxyModel(self)
+        self.proposals_proxy.setSourceModel(self.proposals_model)
+        self.proposals_proxy.setFilterKeyColumn(1)
+        self.proposals_table.setModel(self.proposals_proxy)
+        self.proposals_table.selectionModel().selectionChanged.connect(
+            self._on_proposal_selected
+        )
+
+        self.proposals_page = QWidget()
+        self.proposals_page.setObjectName("proposalsPage")
+        page_box = QVBoxLayout(self.proposals_page)
+        page_box.setContentsMargins(0, 0, 0, 0)
+        page_box.setSpacing(0)
+
+        strip = QFrame()
+        strip.setObjectName("paneHeader")
+        strip.setFixedHeight(control_height(HEADER_HEIGHT + 10, META_PT))
+        strip_row = QHBoxLayout(strip)
+        strip_row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, 0)
+        strip_row.setSpacing(SPACE_6)
+        title = QLabel("PROPOSALS")
+        title.setObjectName("paneTitle")
+        self.proposals_count = QLabel("0")
+        self.proposals_count.setObjectName("countChip")
+        strip_row.addWidget(title)
+        strip_row.addWidget(self.proposals_count)
+        strip_row.addSpacing(SPACE_8)
+
+        self.status_chips = QButtonGroup(self)
+        self.status_chips.setExclusive(True)
+        for label, needle in (
+            ("All", ""),
+            ("Proposed", "proposed"),
+            ("Applied", "applied"),
+            ("Passed", "tests_passed"),
+            ("Failed", "tests_failed"),
+            ("Rejected", "rejected"),
+            ("Reverted", "reverted"),
+        ):
+            chip = QToolButton()
+            chip.setText(label)
+            chip.setObjectName("statusChip")
+            chip.setCheckable(True)
+            chip.setAutoRaise(True)
+            chip.setChecked(not needle)
+            chip.setProperty("needle", needle)
+            chip.clicked.connect(
+                lambda _checked=False, n=needle: self._filter_proposals(n)
+            )
+            self.status_chips.addButton(chip)
+            strip_row.addWidget(chip)
+        strip_row.addStretch(1)
+        page_box.addWidget(strip)
+        page_box.addWidget(self.proposals_stack, 1)
+
         # -- the workspace: files on the left, commits in the middle, and the
         #    selected commit's diff on the right -----------------------------
         self.graph_page = QWidget()
@@ -1249,7 +1305,7 @@ class MainWindow(QMainWindow):
         self.workspace.setChildrenCollapsible(False)
         self.workspace.addWidget(self.graph_page)
         self.tabs.addTab(self.workspace, "&Graph")
-        self.tabs.addTab(self.proposals_stack, "&Proposals")
+        self.tabs.addTab(self.proposals_page, "&Proposals")
 
         # -- the diff column: whatever is selected, in Monaco ----------------
         self.diff_pane = self._build_diff_pane()
@@ -1991,9 +2047,16 @@ class MainWindow(QMainWindow):
         self.detail_header.setAccessible("Proposal detail")
         detail_layout.addWidget(self.detail_header)
 
+        self.detail_badge = QLabel("")
+        self.detail_badge.setObjectName("statusBadge")
+        self.detail_badge.setVisible(False)
         self.detail_meta = ElidedLabel("No proposal selected.", self.palette, muted=True)
         self.detail_meta.setAccessibleName("Proposal summary line")
-        detail_layout.addWidget(self.detail_meta)
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(SPACE_6)
+        meta_row.addWidget(self.detail_badge, 0)
+        meta_row.addWidget(self.detail_meta, 1)
+        detail_layout.addLayout(meta_row)
 
         rationale_caption = field_label("Rationale")
         self.rationale_edit = AutoHeightPlainText(RATIONALE_MAX_LINES, FONT_PT)
@@ -2003,7 +2066,7 @@ class MainWindow(QMainWindow):
         # the diff itself is a centre tab (Monaco); the review pane says where it
         # is instead of showing a second, worse copy of it
         diff_pointer = ElidedLabel(
-            "Diff: the Changes tab (Ctrl+3)", self.palette, muted=True
+            "Diff: the right-hand column", self.palette, muted=True
         )
         diff_pointer.setAccessibleName("Where the diff is shown")
 
@@ -2500,6 +2563,8 @@ class MainWindow(QMainWindow):
         repo_id = self._current_repo_id
         proposals = self.store.list_proposals(repo_id=repo_id) if repo_id is not None else []
         self.proposals_model.set_proposals(proposals)
+        if hasattr(self, "proposals_count"):
+            self.proposals_count.setText(str(len(proposals)))
         row = self.proposals_model.row_for_id(self._selected_proposal_id or -1)
         if row >= 0:
             self.proposals_table.selectRow(row)
@@ -2883,7 +2948,17 @@ class MainWindow(QMainWindow):
         if not rows:
             self._show_proposal_detail(None)
             return
-        self._show_proposal_detail(self.proposals_model.proposal_at(rows[0].row()))
+        index = rows[0]
+        if index.model() is self.proposals_proxy:
+            index = self.proposals_proxy.mapToSource(index)
+        self._show_proposal_detail(self.proposals_model.proposal_at(index.row()))
+
+    def _filter_proposals(self, needle: str) -> None:
+        """Show one status, or every status when ``needle`` is empty."""
+        if needle:
+            self.proposals_proxy.setFilterFixedString(needle)
+        else:
+            self.proposals_proxy.setFilterFixedString("")
 
     def _selected_proposal(self) -> Optional[Proposal]:
         if self._selected_proposal_id is None:
@@ -2893,10 +2968,29 @@ class MainWindow(QMainWindow):
         except SKError:
             return None
 
+    def _set_detail_badge(self, status: Optional[str]) -> None:
+        """The proposal's state, as the same badge the table paints."""
+        badge = getattr(self, "detail_badge", None)
+        if badge is None:
+            return
+        if not status:
+            badge.setVisible(False)
+            return
+        fg, bg = self.palette.status.get(
+            status, (self.palette.muted, self.palette.surface)
+        )
+        badge.setText(status.replace("_", " ").upper())
+        badge.setStyleSheet(
+            f"color: {fg}; background: {bg}; border: 1px solid {fg};"
+            f" border-radius: {BADGE_RADIUS}px; padding: 1px {SPACE_6}px;"
+        )
+        badge.setVisible(True)
+
     def _show_proposal_detail(self, proposal: Optional[Proposal]) -> None:
         if proposal is None:
             self._selected_proposal_id = None
             self.detail_meta.setText("No proposal selected.")
+            self._set_detail_badge(None)
             self.rationale_edit.setPlainText("")
             self._diff_patches, self._diff_pairs = [], []
             self._show_diff_nothing("No proposal selected.")
@@ -2912,8 +3006,9 @@ class MainWindow(QMainWindow):
         self._sync_review_minimum()
         self._selected_proposal_id = proposal.id
         sample_note = " · [SAMPLE]" if proposal.is_sample else ""
+        self._set_detail_badge(proposal.status)
         self.detail_meta.setText(
-            f"Proposal {proposal.id} · status: {proposal.status} · model: "
+            f"Proposal {proposal.id} · model: "
             f"{proposal.model} · created {local_time(proposal.created_at)}{sample_note}"
         )
         self.rationale_edit.setPlainText(proposal.rationale or "(no rationale)")

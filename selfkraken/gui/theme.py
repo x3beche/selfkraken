@@ -497,6 +497,20 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     QCheckBox {{ spacing: {SPACE_4}px; background: transparent; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; }}
 
+    QFrame#paneHeader {{ background: {p.window}; border-bottom: {BORDER_WIDTH}px solid {p.border}; }}
+    QLabel#countChip {{
+        color: {p.muted}; background: {p.surface}; border: {BORDER_WIDTH}px solid {p.border};
+        border-radius: {BADGE_RADIUS}px; padding: 0px {SPACE_6}px; font-size: {META_PT:g}pt;
+    }}
+    QToolButton#statusChip {{
+        background: transparent; color: {p.muted}; border: {BORDER_WIDTH}px solid transparent;
+        border-radius: {RADIUS}px; padding: {SPACE_2}px {SPACE_8}px; font-size: {META_PT:g}pt;
+    }}
+    QToolButton#statusChip:hover {{ background: {p.hover}; color: {p.text}; }}
+    QToolButton#statusChip:checked {{
+        background: {p.surface}; color: {p.text}; border-color: {p.border}; font-weight: 600;
+    }}
+
     /* ------------------------------------------------------------- settings */
     QWidget#settingsNavPane {{
         background: {p.window};
