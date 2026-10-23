@@ -277,27 +277,26 @@ scripts/install.sh                 # installs '.[dev,gui]' (includes PySide6)
 ```
 
 **The shell is one workspace.** A single 44px top bar carries the wordmark,
-the page strip (**Graph · Proposals · Changes · Branches · Review · Settings**),
-the repository selector and the model state; one row of actions sits under it
-(**Add Repo**, **Index**, **Run Tests**, **Export/Import**, **Sample**,
-**More**).
+the page strip (**Graph · Proposals · Review · Settings**), the repository
+selector and the model state; one row of actions sits under it (**Add Repo**,
+**Index**, **Run Tests**, **Export/Import**, **Sample**, **More**).
 
-The **Graph** page is three panes side by side, splitter-resizable:
+Below that, the Graph page is three columns, splitter-resizable:
 
-| Pane | What it holds |
+| Column | What it holds |
 | --- | --- |
-| **Left** | the **file tree** — files touched by the selected commit are marked `✎ changed`; double-click opens one read-only in its own tab |
-| **Middle** | the **commit graph**: painted lanes, merge rings, ref badges like `HEAD`, `main ↑2`, `tag: v0.1.0`, `feature/login ⇄ origin` |
-| **Right** | the **commit diff** — click any commit and its patch appears here, syntax-highlighted, without leaving the graph |
+| **Explorer** (left) | one **search box** over both lists, then **Files** and **Branches** as tabs: files touched by the selection are marked `✎ changed`, double-click opens one read-only in its own tab |
+| **Commits** (middle) | the **commit graph**: painted lanes, merge rings, ref badges like `HEAD`, `main ↑2`, `tag: v0.1.0`, `feature/login ⇄ origin` |
+| **Diff** (right) | **Monaco**, always: click a commit and its patch appears file by file; select a proposal and its diff replaces it. There is no separate Changes tab — the diff is a column, not a place you navigate to |
 
-The other pages: a **proposals** table with coloured status badges, the **New
+Other pages: the **proposals** table with coloured status badges, the **New
 proposal** form (request with live character counter and inline validation,
 optional context files, optional *paste a unified diff* box for degraded mode),
-the **proposal detail** — rationale, Apply with *Run tests / Commit on success /
-Keep on failure*, Reject, Revert, and a collapsible test-output tail — and
-**Branches**. A bottom **activity log** shows every step, newest first.
-Everything slow runs in worker threads; the window never freezes, and errors
-come back as plain `Error:` text — never tracebacks.
+and the **proposal detail** — rationale, Apply with *Run tests / Commit on
+success / Keep on failure*, Reject, Revert, and a collapsible test-output tail.
+A bottom **activity log** shows every step, newest first. Everything slow runs
+in worker threads; the window never freezes, and errors come back as plain
+`Error:` text — never tracebacks.
 
 ### Themes and the Settings page
 

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from selfkraken.gui.app import PERMANENT_TABS
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -566,12 +567,12 @@ def test_payload_theme_tokens_come_from_the_palette() -> None:
 # --------------------------------------------------------------------------- #
 # the window's centre tabs, driven through the controller (offscreen = fallback)
 # --------------------------------------------------------------------------- #
-def test_changes_tab_lists_every_file_of_a_multi_file_diff(
+def test_diff_pane_lists_every_file_of_a_multi_file_diff(
     window, git_repo, make_patch, sources
 ) -> None:
     from PySide6.QtWidgets import QApplication
 
-    assert window.tabs.tabText(2) == "&Changes"
+    assert window.diff_pane.isVisibleTo(window) or not window.isVisible()
     window.add_repo(git_repo, code_test_command(git_repo))
     window.index_repo()
     patch = make_patch(
@@ -587,7 +588,6 @@ def test_changes_tab_lists_every_file_of_a_multi_file_diff(
     # isHidden() is the pane's own flag; isVisibleTo(window) would also be false
     # for a widget sitting on a tab page that is not the current one
     assert not window.diff_files.isHidden(), "a multi-file diff lists its files"
-    window.tabs.setCurrentIndex(2)
     assert window.diff_files.isVisibleTo(window)
     counts = [model.index(r, 0).data(Qt.ItemDataRole.UserRole) for r in range(2)]
     assert all(added > 0 for added, _removed in counts), counts
@@ -637,7 +637,10 @@ def test_opening_a_file_adds_a_closable_centre_tab(
     assert close is not None and close.objectName() == "tabClose"
     assert close.text() == "\u2715", "a quiet glyph, not a filled red box"
     assert bar.tabButton(0, QTabBar.ButtonPosition.RightSide) is None, "Graph is not closable"
-    assert bar.tabButton(2, QTabBar.ButtonPosition.RightSide) is None, "Changes is not closable"
+    for index in range(PERMANENT_TABS):
+        assert bar.tabButton(index, QTabBar.ButtonPosition.RightSide) is None, (
+            f"permanent page {index} is not closable"
+        )
     window.open_file_tab("calc.py")  # the same path focuses, never duplicates
     assert window.tabs.count() == before + 1
     close.click()  # the real button closes its own tab
@@ -649,8 +652,6 @@ def test_switching_repository_closes_file_tabs(window, git_repo, tmp_path) -> No
 
     window.add_repo(git_repo, code_test_command(git_repo))
     window.open_file_tab("calc.py")
-    from selfkraken.gui.app import PERMANENT_TABS
-
     assert window.tabs.count() > PERMANENT_TABS
     second = tmp_path / "other-repo"
     second.mkdir()
@@ -683,13 +684,13 @@ def test_start_hooks_drive_the_window(
         proposal_id = proposal.id
     finally:
         store.close()
-    monkeypatch.setenv("SK_GUI_START_TAB", "changes")
+    monkeypatch.setenv("SK_GUI_START_TAB", "proposals")
     monkeypatch.setenv("SK_GUI_SELECT_PROPOSAL", "1")
     win = MainWindow(run_jobs_inline=True, theme="dark", settings=gui_settings)
     try:
         win.show()
         qapp.processEvents()
-        assert win.tabs.currentIndex() == 2
+        assert win.tabs.currentIndex() == 1
         assert win._selected_proposal_id == proposal_id
     finally:
         win.close()

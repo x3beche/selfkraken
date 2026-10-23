@@ -20,7 +20,16 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer, Signal, qVersion
+from PySide6.QtCore import (
+    QRect,
+    QRectF,
+    QSize,
+    QSortFilterProxyModel,
+    Qt,
+    QTimer,
+    Signal,
+    qVersion,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -203,11 +212,9 @@ MIN_WINDOW_HEIGHT = 700
 #: permanent centre tabs, by index: Graph, Proposals, Changes; files come after
 TAB_GRAPH = 0
 TAB_PROPOSALS = 1
-TAB_CHANGES = 2
-TAB_BRANCHES = 3
-TAB_REVIEW = 4
-TAB_SETTINGS = 5
-PERMANENT_TABS = 6
+TAB_REVIEW = 2
+TAB_SETTINGS = 3
+PERMANENT_TABS = 4
 
 #: a diff is shown side by side only when the pane is at least this wide; below
 #: it the two columns would each be narrower than a line of code
@@ -902,9 +909,14 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         resolve_font_families()  # before any QFont or stylesheet is built
         self.settings = settings or load_settings()
-        # a choice made in Settings wins over the launch default; the flag only
-        # decides the very first run
-        self._theme_choice = self._stored_theme() or (theme or "auto")
+        # an explicit --theme wins; otherwise the choice made in Settings, and
+        # "auto" (follow the desktop) when nothing was picked yet
+        explicit = (theme or "").strip().lower()
+        self._theme_choice = (
+            explicit
+            if explicit in ("dark", "light")
+            else self._stored_theme() or "auto"
+        )
         self.palette: Palette = resolve(
             self._theme_choice, prefers_dark=_system_prefers_dark()
         )
@@ -1012,14 +1024,9 @@ class MainWindow(QMainWindow):
         self.act_tab_proposals.setShortcut(QKeySequence("Ctrl+2"))
         self.act_tab_proposals.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
 
-        self.act_tab_changes = QAction("Show &Changes tab", self)
-        self.act_tab_changes.setShortcut(QKeySequence("Ctrl+3"))
-        self.act_tab_changes.setToolTip("The diff of the selected proposal (Ctrl+3)")
-        self.act_tab_changes.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
-
-        self.act_tab_files = QAction("Show &Files tab", self)
+        self.act_tab_files = QAction("Focus the explorer", self)
         self.act_tab_files.setShortcut(QKeySequence("Ctrl+4"))
-        self.act_tab_files.triggered.connect(lambda: self.tabs.setCurrentIndex(TAB_FILES))
+        self.act_tab_files.triggered.connect(self._focus_explorer)
 
         self.act_tab_review = QAction("Show &Review tab", self)
         self.act_tab_review.setShortcut(QKeySequence("Ctrl+5"))
@@ -1035,7 +1042,7 @@ class MainWindow(QMainWindow):
 
         for action in (
             self.act_refresh, self.act_new_proposal, self.act_tab_graph,
-            self.act_tab_proposals, self.act_tab_changes, self.act_quit,
+            self.act_tab_proposals, self.act_quit,
             self.act_help,
         ):
             self.addAction(action)
@@ -1246,9 +1253,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.workspace, "&Graph")
         self.tabs.addTab(self.proposals_stack, "&Proposals")
 
-        # -- Changes tab: the proposal diff, in Monaco -----------------------
-        self.changes_page = self._build_changes_page()
-        self.tabs.addTab(self.changes_page, "&Changes")
+        # -- the diff column: whatever is selected, in Monaco ----------------
+        self.diff_pane = self._build_diff_pane()
 
         # -- Settings: built here, added last by _finalize_tabs so it sits at
         #    the end of the strip, the way a settings page always does --------
@@ -1262,19 +1268,28 @@ class MainWindow(QMainWindow):
         shell.setSpacing(0)
         shell.addWidget(self.top_bar)
         shell.addWidget(self.toolbar)
-        shell.addWidget(self.tabs, 1)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setObjectName("mainSplitter")
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.addWidget(self.tabs)
+        self.main_splitter.addWidget(self.diff_pane)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setSizes([980, COMMIT_DIFF_WIDTH])
+        shell.addWidget(self.main_splitter, 1)
         self.setCentralWidget(central)
 
     def _on_centre_tab_changed(self, index: int) -> None:
         """Coming back to Changes re-checks the inline/side decision: the pane
         had no width to measure while it was hidden, so the strip and the editor
         may still show what the last visible size implied."""
-        if index == TAB_CHANGES and self._diff_patches:
+        if self._diff_patches:
             self._apply_diff_layout()
             self._repaint_diff()
 
     # ------------------------------------------------------------ changes tab
-    def _build_changes_page(self) -> QWidget:
+    def _build_diff_pane(self) -> QWidget:
         """File strip on top, the editor below: no chrome in between.
 
         One row per touched file with its ``+N/−M`` counts; picking a row shows
@@ -1282,8 +1297,8 @@ class MainWindow(QMainWindow):
         nothing, so the path lives in the strip's label instead.
         """
         page = QWidget()
-        page.setObjectName("changesPage")
-        page.setAccessibleName("Proposal diff")
+        page.setObjectName("diffPane")
+        page.setAccessibleName("Diff")
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
@@ -1294,7 +1309,11 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(strip)
         row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_NESTED, 0)
         row.setSpacing(SPACE_6)
-        self.diff_title = ElidedLabel("No proposal selected.", self.palette, muted=True)
+        caption = QLabel("DIFF")
+        caption.setObjectName("paneTitle")
+        self.diff_source = ElidedLabel("", self.palette, muted=True)
+        self.diff_source.setAccessibleName("What the diff belongs to")
+        self.diff_title = ElidedLabel("Nothing selected.", self.palette, muted=True)
         self.diff_title.setAccessibleName("Diff file name")
         self.diff_hint = ElidedLabel("", self.palette, muted=True)
         self.diff_hint.setAccessibleName("Diff note")
@@ -1308,6 +1327,8 @@ class MainWindow(QMainWindow):
             "Show the two versions next to each other (inline when the pane is narrow)"
         )
         self.side_by_side_button.toggled.connect(self._on_side_by_side_toggled)
+        row.addWidget(caption, 0)
+        row.addWidget(self.diff_source, 0)
         row.addWidget(self.diff_title, 3)
         row.addWidget(self.diff_hint, 2)
         row.addWidget(self.side_by_side_button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -1393,7 +1414,18 @@ class MainWindow(QMainWindow):
         for widget in [root, *root.findChildren(QWidget)]:
             if isinstance(getattr(widget, "palette", None), Palette):
                 widget.palette = self.palette
-                widget.update()
+            # some views keep the palette privately (the graph, the editor)
+            if isinstance(getattr(widget, "_palette", None), Palette):
+                widget._palette = self.palette
+            if isinstance(widget, MonacoView):
+                widget.set_theme(self.palette.name)
+            model = getattr(widget, "table_model", None)
+            if model is not None and isinstance(getattr(model, "palette", None), Palette):
+                model.palette = self.palette
+            delegate = getattr(widget, "graph_delegate", None)
+            if delegate is not None and isinstance(getattr(delegate, "palette", None), Palette):
+                delegate.palette = self.palette
+            widget.update()
         for view in root.findChildren(QAbstractItemView):
             model = view.model()
             if isinstance(getattr(model, "palette", None), Palette):
@@ -1402,6 +1434,16 @@ class MainWindow(QMainWindow):
             if isinstance(getattr(delegate, "palette", None), Palette):
                 delegate.palette = self.palette
             view.viewport().update()
+
+    def _on_explorer_search(self, text: str) -> None:
+        """One box, both lists: a file path or a branch name narrows the column."""
+        needle = (text or "").strip()
+        if hasattr(self, "files_proxy"):
+            self.files_proxy.setFilterFixedString(needle)
+            if needle:
+                self.explorer_tabs.setCurrentIndex(0)
+        if hasattr(self, "branches_proxy"):
+            self.branches_proxy.setFilterFixedString(needle if len(needle) > 1 else "")
 
     # -------------------------------------------------------------- settings
     def _build_settings_page(self) -> QWidget:
@@ -1588,8 +1630,13 @@ class MainWindow(QMainWindow):
     def _build_left_pages(self) -> None:
         """Files and Branches as pages of the workspace, not side panels."""
         self.file_model = FileTreeModel(self.palette, self)
+        self.files_proxy = QSortFilterProxyModel(self)
+        self.files_proxy.setSourceModel(self.file_model)
+        self.files_proxy.setRecursiveFilteringEnabled(True)
+        self.files_proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.files_proxy.setFilterRole(Qt.ItemDataRole.DisplayRole)
         self.files_view = QTreeView()
-        self.files_view.setModel(self.file_model)
+        self.files_view.setModel(self.files_proxy)
         self.files_view.setHeaderHidden(True)
         compact_item_view(self.files_view)
         self.files_view.setAccessibleName("File tree")
@@ -1607,8 +1654,12 @@ class MainWindow(QMainWindow):
         self.files_stack.addWidget(self.files_view)
 
         self.branch_model = BranchListModel(self.palette, self)
+        self.branches_proxy = QSortFilterProxyModel(self)
+        self.branches_proxy.setSourceModel(self.branch_model)
+        self.branches_proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.branches_proxy.setFilterRole(Qt.ItemDataRole.DisplayRole)
         self.branches_view = QListView()
-        self.branches_view.setModel(self.branch_model)
+        self.branches_view.setModel(self.branches_proxy)
         compact_item_view(self.branches_view)
         self.branches_view.setAccessibleName("Branch list")
         self.branches_empty = notice_page("No branches to show.", self.palette)
@@ -1616,74 +1667,82 @@ class MainWindow(QMainWindow):
         self.branches_stack.addWidget(self.branches_empty)
         self.branches_stack.addWidget(self.branches_view)
 
-        # files live beside the commits, not behind a tab: the tree is what
-        # the middle of the window is read against
-        self.commit_diff_page = self._build_commit_diff_pane()
-        self.workspace.insertWidget(0, self.files_stack)
-        self.workspace.addWidget(self.commit_diff_page)
+        # the explorer sits beside the commits: search on top, Files and
+        # Branches under it, the way a Git client's left column works
+        explorer = QWidget()
+        explorer.setObjectName("explorerPane")
+        explorer_box = QVBoxLayout(explorer)
+        explorer_box.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, 0)
+        explorer_box.setSpacing(SPACE_4)
+
+        self.explorer_search = QLineEdit()
+        self.explorer_search.setObjectName("explorerSearch")
+        self.explorer_search.setPlaceholderText("Search files and branches…")
+        self.explorer_search.setClearButtonEnabled(True)
+        self.explorer_search.setAccessibleName("Search files and branches")
+        self.explorer_search.textChanged.connect(self._on_explorer_search)
+        explorer_box.addWidget(self.explorer_search)
+
+        self.explorer_tabs = QTabBar()
+        self.explorer_tabs.setObjectName("explorerTabs")
+        self.explorer_tabs.setDrawBase(False)
+        self.explorer_tabs.addTab("Files")
+        self.explorer_tabs.addTab("Branches")
+        explorer_box.addWidget(self.explorer_tabs)
+
+        self.explorer_stack = QStackedWidget()
+        self.explorer_stack.addWidget(self.files_stack)
+        self.explorer_stack.addWidget(self.branches_stack)
+        explorer_box.addWidget(self.explorer_stack, 1)
+        self.explorer_tabs.currentChanged.connect(self.explorer_stack.setCurrentIndex)
+
+        self.explorer_pane = explorer
+        self.workspace.insertWidget(0, explorer)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setStretchFactor(2, 0)
-        self.workspace.setSizes([FILES_PANE_WIDTH, 760, COMMIT_DIFF_WIDTH])
-
-        self.tabs.addTab(self.branches_stack, "&Branches")
+        self.workspace.setSizes([FILES_PANE_WIDTH, 900])
 
     # ------------------------------------------------------------- right dock
-    def _build_commit_diff_pane(self) -> QWidget:
-        """The selected commit's patch, beside the graph that selected it."""
-        pane = QWidget()
-        pane.setObjectName("commitDiffPane")
-        box = QVBoxLayout(pane)
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(0)
-
-        header = QFrame()
-        header.setObjectName("commitDiffHeader")
-        header.setFixedHeight(control_height(HEADER_HEIGHT, META_PT))
-        row = QHBoxLayout(header)
-        row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, 0)
-        row.setSpacing(SPACE_6)
-        caption = QLabel("COMMIT DIFF")
-        caption.setObjectName("paneTitle")
-        self.commit_diff_title = ElidedLabel("pick a commit", self.palette, muted=True)
-        self.commit_diff_title.setAccessibleName("Commit diff title")
-        row.addWidget(caption)
-        row.addWidget(self.commit_diff_title, 1)
-        box.addWidget(header)
-
-        self.commit_diff_view = QPlainTextEdit()
-        self.commit_diff_view.setObjectName("commitDiffView")
-        self.commit_diff_view.setReadOnly(True)
-        self.commit_diff_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.commit_diff_view.setFont(monospace_font(MONO_PT))
-        self.commit_diff_view.setAccessibleName("Commit diff")
-        self.commit_diff_view.setPlainText(
-            "Select a commit to see what it changed."
-        )
-        self.commit_diff_highlighter = DiffHighlighter(
-            self.commit_diff_view.document(), self.palette
-        )
-        box.addWidget(self.commit_diff_view, 1)
-        return pane
-
     def _load_commit_patch(self, repo_path: Path, sha: str, subject: str) -> None:
-        """Ask git for the commit's patch and put it in the right-hand pane."""
-        self.commit_diff_title.setText(f"{sha[:9]} · {subject}")
-        self.commit_diff_view.setPlainText("Reading the commit…")
+        """Put the commit's patch in the diff column, file by file, in Monaco."""
+        self.diff_source.setText(f"commit {sha[:9]} · {subject}")
 
-        def job(_store: Store, _settings: Settings) -> str:
+        def blob(rev: str, path: str) -> str:
+            if not rev or not path:
+                return ""
             proc = gitops.run_git(
-                repo_path, "show", "--patch", "--no-color", "--format=", sha
+                repo_path, "show", f"{rev}:{path}", check=False
             )
-            return proc.stdout
+            return proc.stdout if proc.returncode == 0 else ""
 
-        def done(patch: str) -> None:
-            self.commit_diff_view.setPlainText(patch or "This commit changed nothing.")
+        def job(_store: Store, _settings: Settings):
+            patch = gitops.run_git(
+                repo_path, "show", "--patch", "--no-color", "--format=", sha
+            ).stdout
+            patches = monaco_api.split_diff(patch)
+            parents = gitops.run_git(
+                repo_path, "show", "-s", "--format=%P", sha
+            ).stdout.split()
+            parent = parents[0] if parents else ""
+            pairs = []
+            for file_patch in patches:
+                old_path = file_patch.old_path or file_patch.path
+                new_path = file_patch.path or file_patch.old_path
+                old = "" if file_patch.is_new else blob(parent, old_path)
+                new = "" if file_patch.is_delete else blob(sha, new_path)
+                pairs.append((old, new))
+            return patches, pairs
 
-        def failed(message: str) -> None:
-            self.commit_diff_view.setPlainText(f"Diff unavailable: {message}")
-
-        self.runner.submit("commit-diff", job, on_ok=done, on_error=failed)
+        self.runner.submit(
+            "commit-diff",
+            job,
+            on_ok=lambda result: self._show_diff_patches(
+                result[0], result[1], f"commit {sha[:9]} · {subject}"
+            ),
+            on_error=lambda message: self._show_diff_nothing(
+                f"Diff unavailable: {message}"
+            ),
+        )
 
     def _build_review_page(self) -> None:
         """The review column, as a page of the workspace."""
@@ -2085,7 +2144,6 @@ class MainWindow(QMainWindow):
         for action in (
             self.act_tab_graph,
             self.act_tab_proposals,
-            self.act_tab_changes,
             self.act_tab_files,
             self.act_tab_review,
         ):
@@ -2107,7 +2165,6 @@ class MainWindow(QMainWindow):
             self.act_refresh,
             self.act_tab_graph,
             self.act_tab_proposals,
-            self.act_tab_changes,
             self.act_tab_files,
             self.act_tab_review,
             self.act_help,
@@ -2119,6 +2176,11 @@ class MainWindow(QMainWindow):
         """Keep every page name whole: the strip never elides a permanent tab."""
         width = self.tab_bar.sizeHint().width()
         self.tab_bar.setMinimumWidth(width)
+
+    def _focus_explorer(self) -> None:
+        """Ctrl+4: put the cursor in the file search, the column's front door."""
+        self.explorer_search.setFocus()
+        self.explorer_search.selectAll()
 
     def _finalize_tabs(self) -> None:
         """Only file tabs close: the pages are the shell, not documents."""
@@ -2179,7 +2241,7 @@ class MainWindow(QMainWindow):
                     self.select_proposal(proposals[0].id)
         wanted = (os.environ.get(START_TAB_VAR) or "").strip().lower()
         index = {
-            "graph": TAB_GRAPH, "proposals": TAB_PROPOSALS, "changes": TAB_CHANGES,
+            "graph": TAB_GRAPH, "proposals": TAB_PROPOSALS,
         }.get(wanted)
         if index is not None:
             self.tabs.setCurrentIndex(index)
@@ -2780,14 +2842,28 @@ class MainWindow(QMainWindow):
         if token != self._diff_request or self._selected_proposal_id != proposal_id:
             return  # a newer selection has already replaced this one
         patches, pairs = result
+        self._show_diff_patches(
+            patches, pairs, f"proposal {proposal_id}", "This proposal has no diff."
+        )
+
+    def _show_diff_patches(
+        self,
+        patches: Sequence[monaco_api.FilePatch],
+        pairs: Sequence[Optional[tuple[str, str]]],
+        source: str,
+        empty_message: str = "No changes.",
+    ) -> None:
+        """Fill the diff column from either a proposal or a commit."""
         self._diff_patches = list(patches)
         self._diff_pairs = list(pairs)
         self._diff_auto_side = True
-        row = self._selected_diff_row()
-        self._fill_diff_file_list(patches)
+        self._diff_side_by_side = None
+        self.diff_source.setText(source)
         if not patches:
-            self._show_diff_nothing("This proposal has no diff.")
+            self._show_diff_nothing(empty_message)
             return
+        row = max(self._selected_diff_row(), 0)
+        self._fill_diff_file_list(patches)
         self._suppress_signals = True
         try:
             self.diff_files.setCurrentIndex(
@@ -2862,7 +2938,7 @@ class MainWindow(QMainWindow):
     def _side_by_side_now(self) -> bool:
         if self._diff_side_by_side is None:
             self._diff_side_by_side = (
-                self.changes_page.width() >= SIDE_BY_SIDE_MIN_WIDTH
+                self.diff_pane.width() >= SIDE_BY_SIDE_MIN_WIDTH
             )
         return bool(self._diff_side_by_side)
 
@@ -2870,7 +2946,7 @@ class MainWindow(QMainWindow):
         """Narrow pane means inline, until the user picks a layout themselves."""
         if not self._diff_patches or not self._diff_auto_side:
             return
-        wanted = self.changes_page.width() >= SIDE_BY_SIDE_MIN_WIDTH
+        wanted = self.diff_pane.width() >= SIDE_BY_SIDE_MIN_WIDTH
         if wanted == self._diff_side_by_side:
             return
         self._diff_side_by_side = wanted
@@ -2881,6 +2957,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- file tabs
     def _on_file_activated(self, index) -> None:
+        if hasattr(self, "files_proxy") and index.model() is self.files_proxy:
+            index = self.files_proxy.mapToSource(index)
         """Double-click / Enter in the Files tree opens the file in a tab."""
         if not index.isValid():
             return
@@ -3214,8 +3292,7 @@ class MainWindow(QMainWindow):
         )
         self.commit_message_edit.setPlainText(commit.subject or "(no subject)")
         repo_path = Path(repo.path)
-        if hasattr(self, "commit_diff_view"):
-            self._load_commit_patch(repo_path, commit.sha, commit.subject or "")
+        self._load_commit_patch(repo_path, commit.sha, commit.subject or "")
 
         def job(_store: Store, _settings: Settings):
             return read_commit_detail(repo_path, commit.sha)
