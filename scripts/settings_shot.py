@@ -24,7 +24,8 @@ for theme in ("dark", "light"):
     window = MainWindow(run_jobs_inline=True, theme=theme, settings=settings)
     window.resize(1280, 800)
     window.show()
-    window.tabs.setCurrentIndex(window.tabs.count() - 1)
+    from selfkraken.gui.app import TAB_SETTINGS
+    window.tabs.setCurrentIndex(TAB_SETTINGS)
     app.processEvents()
     path = out / f"settings-{theme}.png"
     window.grab().save(str(path))

@@ -276,29 +276,40 @@ scripts/install.sh                 # installs '.[dev,gui]' (includes PySide6)
 .venv/bin/skraken gui --theme light
 ```
 
-What you get: a repo selector, **Add Repo** (folder picker + test command),
-**Index**, **Run Tests**, **Export/Import**, clearly labelled **[SAMPLE]**
-demo data, and a model status label that explains degraded mode when no
-`SK_LLM_BASE_URL` / `SK_LLM_MODEL` is configured. The center is a
-GitKraken-style **commit graph** (painted lanes, merge rings, ref badges like
-`HEAD`, `main ↑2`, `tag: v0.1.0`, `feature/login ⇄ origin`) and a
-**proposals** table with coloured status badges. The right pane holds the
-**New proposal** form (request with live character counter and inline
+**The shell is one workspace, not a wall of panels.** A single 44px top bar
+carries the wordmark, the page strip (**Graph · Proposals · Changes · Files ·
+Branches · Review · Settings**), the repository selector and the model state;
+one row of actions sits under it (**Add Repo**, **Index**, **Run Tests**,
+**Export/Import**, **Sample**, **More**). Below that, the page is the whole
+window — there are no side docks to resize or lose, and Settings lives at the
+end of the strip the way it does in a browser.
+
+Inside the pages: a GitKraken-style **commit graph** (painted lanes, merge
+rings, ref badges like `HEAD`, `main ↑2`, `tag: v0.1.0`,
+`feature/login ⇄ origin`), a **proposals** table with coloured status badges,
+the **New proposal** form (request with live character counter and inline
 validation, optional context files, optional *paste a unified diff* box for
-degraded mode) and the **proposal detail**: rationale, Apply with *Run tests /
-Commit on success / Keep on failure* checkboxes and a confirmation dialog,
-Reject, Revert, and a collapsible test-output tail. A bottom **activity log**
-shows every step, newest first. Everything slow runs in worker threads; the
-window never freezes, and errors come back as plain `Error:` text — never
-tracebacks.
+degraded mode), and the **proposal detail** — rationale, Apply with *Run tests
+/ Commit on success / Keep on failure*, Reject, Revert, and a collapsible
+test-output tail. A bottom **activity log** shows every step, newest first.
+Everything slow runs in worker threads; the window never freezes, and errors
+come back as plain `Error:` text — never tracebacks.
 
 ### Themes and the Settings page
 
-**Settings → Appearance** offers **Dark**, **Light** and **System** (follows the
-desktop's own preference). The choice applies the moment it is picked — no
-restart — and is remembered in `gui-window.json` next to the database, so the
-window comes back in the theme you left it in. The same page carries an
-**About** section: version, Python, Qt, and where the data and database live.
+**Settings → Appearance** offers three choices, each with a swatch of what it
+looks like:
+
+| Choice | What it is |
+| --- | --- |
+| **Dark** (default) | Spartan Dark: near-black `#09090b`, zinc greys, one white accent, orange as the only warm note |
+| **Light** | GitHub Light: white page, `#f6f8fa` wells, one blue (`#0969da`) |
+| **System** | follows the desktop's own light/dark preference |
+
+The choice applies the moment it is picked — no restart — and is remembered in
+`gui-window.json` next to the database, so the window comes back in the theme
+you left it in. The same page carries a **Type** card (the families in use) and
+an **About** section: version, Python, Qt, and where the data and database live.
 
 The interface is set in **Switzer**, with **IBM Plex Mono** for code, paths and
 the activity log. Both travel with the package (and the GUI builds), so the

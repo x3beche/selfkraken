@@ -131,7 +131,10 @@ from selfkraken.gui.theme import (
     SPACE_4,
     SPACE_6,
     SPACE_8,
+    REVIEW_PAGE_WIDTH,
+    SETTINGS_NAV_WIDTH,
     STATUS_BAR_HEIGHT,
+    TOP_BAR_HEIGHT,
     UI_FONT,
     WINDOW_SIZE,
     Palette,
@@ -197,8 +200,11 @@ MIN_WINDOW_HEIGHT = 700
 TAB_GRAPH = 0
 TAB_PROPOSALS = 1
 TAB_CHANGES = 2
-TAB_SETTINGS = 3
-PERMANENT_TABS = 4
+TAB_FILES = 3
+TAB_BRANCHES = 4
+TAB_REVIEW = 5
+TAB_SETTINGS = 6
+PERMANENT_TABS = 7
 
 #: a diff is shown side by side only when the pane is at least this wide; below
 #: it the two columns would each be narrower than a line of code
@@ -690,11 +696,16 @@ class ThemeCard(QAbstractButton):
     """
 
     def __init__(
-        self, label: str, palette: Palette, parent: Optional[QWidget] = None
+        self,
+        label: str,
+        swatch: Palette,
+        chrome: Palette,
+        parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._label = label
-        self._swatch = palette
+        self._swatch = swatch
+        self._chrome = chrome
         # painted by paintEvent, but text()/screen readers need the real label
         self.setText(label)
         self.setCheckable(True)
@@ -707,8 +718,8 @@ class ThemeCard(QAbstractButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         outer = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QPen(QColor(self._swatch.border), BORDER_WIDTH))
-        p.setBrush(QColor(self._swatch.window))
+        p.setPen(QPen(QColor(self._chrome.border), BORDER_WIDTH))
+        p.setBrush(QColor(self._chrome.surface))
         p.drawRoundedRect(outer, RADIUS, RADIUS)
 
         swatch = QRectF(
@@ -730,7 +741,7 @@ class ThemeCard(QAbstractButton):
 
         if self.isChecked():
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(QPen(QColor(self._swatch.accent), 2))
+            p.setPen(QPen(QColor(self._chrome.text), 2))
             p.drawRoundedRect(outer.adjusted(1, 1, -1, -1), RADIUS, RADIUS)
 
         font = QFont(ui_family())
@@ -739,12 +750,139 @@ class ThemeCard(QAbstractButton):
             QFont.Weight.DemiBold if self.isChecked() else QFont.Weight.Normal
         )
         p.setFont(font)
-        p.setPen(QColor(self._swatch.text if self.isChecked() else self._swatch.muted))
+        p.setPen(QColor(self._chrome.text if self.isChecked() else self._chrome.muted))
         p.drawText(
             QRectF(0, 54, self.width(), self.height() - 58),
             int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
             self._label,
         )
+
+
+class CentreTabs(QWidget):
+    """The tab widget the shell uses, with its bar living in the top bar.
+
+    Same surface as the ``QTabWidget`` the window grew up with (add/remove/
+    count/widget/currentChanged/tabCloseRequested), so the pages did not have to
+    learn a new API — only where the strip is drawn changed.
+    """
+
+    tabCloseRequested = Signal(int)
+    currentChanged = Signal(int)
+
+    def __init__(self, bar: QTabBar, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._bar = bar
+        self._stack = QStackedWidget(self)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+        box.addWidget(self._stack)
+
+        self._bar.currentChanged.connect(self._stack.setCurrentIndex)
+        self._bar.currentChanged.connect(self.currentChanged)
+        self._bar.tabCloseRequested.connect(self.tabCloseRequested)
+
+    # -- QTabWidget-shaped API ------------------------------------------------
+    def addTab(self, widget: QWidget, label: str) -> int:  # noqa: N802 - Qt name
+        index = self._bar.addTab(label)
+        self._stack.addWidget(widget)
+        return index
+
+    def removeTab(self, index: int) -> None:  # noqa: N802 - Qt name
+        widget = self._stack.widget(index)
+        self._bar.removeTab(index)
+        if widget is not None:
+            self._stack.removeWidget(widget)
+            widget.deleteLater()
+
+    def count(self) -> int:
+        return self._bar.count()
+
+    def widget(self, index: int) -> Optional[QWidget]:
+        return self._stack.widget(index)
+
+    def indexOf(self, widget: QWidget) -> int:  # noqa: N802 - Qt name
+        return self._stack.indexOf(widget)
+
+    def setCurrentIndex(self, index: int) -> None:  # noqa: N802 - Qt name
+        self._bar.setCurrentIndex(index)
+
+    def currentIndex(self) -> int:  # noqa: N802 - Qt name
+        return self._bar.currentIndex()
+
+    def currentWidget(self) -> Optional[QWidget]:  # noqa: N802 - Qt name
+        return self._stack.currentWidget()
+
+    def tabBar(self) -> QTabBar:  # noqa: N802 - Qt name
+        return self._bar
+
+    def setTabsClosable(self, closable: bool) -> None:  # noqa: N802 - Qt name
+        self._bar.setTabsClosable(closable)
+
+    def setTabToolTip(self, index: int, tip: str) -> None:  # noqa: N802 - Qt name
+        self._bar.setTabToolTip(index, tip)
+
+    def tabText(self, index: int) -> str:  # noqa: N802 - Qt name
+        return self._bar.tabText(index)
+
+    def setTabText(self, index: int, text: str) -> None:  # noqa: N802 - Qt name
+        self._bar.setTabText(index, text)
+
+    def setDocumentMode(self, on: bool) -> None:  # noqa: N802 - Qt name
+        self._bar.setDocumentMode(on)
+
+
+class SettingsNavItem(QFrame):
+    """One row of the settings column: title, what it holds, and its value."""
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        title: str,
+        note: str,
+        value: str,
+        palette: Palette,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("navItem")
+        self.setProperty("selected", False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(title)
+
+        column = QVBoxLayout(self)
+        column.setContentsMargins(SPACE_8, SPACE_6, SPACE_8, SPACE_6)
+        column.setSpacing(SPACE_2)
+
+        head = QHBoxLayout()
+        head.setSpacing(SPACE_6)
+        name = QLabel(title)
+        name.setObjectName("navTitle")
+        head.addWidget(name, 1)
+        if value:
+            right = QLabel(value)
+            right.setObjectName("navValue")
+            head.addWidget(right)
+        column.addLayout(head)
+
+        caption = QLabel(note)
+        caption.setObjectName("navDesc")
+        caption.setWordWrap(True)
+        column.addWidget(caption)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", bool(selected))
+        # a dynamic property does not restyle by itself
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt name
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -796,13 +934,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("selfkraken — repository-local Git assistant")
 
         self._build_actions()
+        self._build_top_bar()
         self._build_toolbar()
         self._build_central()
-        self._build_left_dock()
-        self._build_right_dock()
+        self._build_left_pages()
+        self._build_review_page()
         self._build_bottom_dock()
         self._build_status_bar()
-        self._build_menu()
+        self._build_more_menu()
+        self._finalize_tabs()
         self._set_tab_order()
         if not self._restore_geometry():
             self.resize(*WINDOW_SIZE)
@@ -874,6 +1014,14 @@ class MainWindow(QMainWindow):
         self.act_tab_changes.setToolTip("The diff of the selected proposal (Ctrl+3)")
         self.act_tab_changes.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
 
+        self.act_tab_files = QAction("Show &Files tab", self)
+        self.act_tab_files.setShortcut(QKeySequence("Ctrl+4"))
+        self.act_tab_files.triggered.connect(lambda: self.tabs.setCurrentIndex(TAB_FILES))
+
+        self.act_tab_review = QAction("Show &Review tab", self)
+        self.act_tab_review.setShortcut(QKeySequence("Ctrl+5"))
+        self.act_tab_review.triggered.connect(lambda: self.tabs.setCurrentIndex(TAB_REVIEW))
+
         self.act_quit = QAction("&Quit", self)
         self.act_quit.setShortcut(QKeySequence.StandardKey.Quit)
         self.act_quit.triggered.connect(self.close)
@@ -889,25 +1037,39 @@ class MainWindow(QMainWindow):
         ):
             self.addAction(action)
 
-    def _build_toolbar(self) -> None:
-        """One compact row: repo selector | actions | sample menu … model pill."""
-        bar = QToolBar("Main toolbar")
-        bar.setObjectName("mainToolBar")
-        bar.setMovable(False)
-        bar.setFloatable(False)
-        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        bar.setIconSize(QSize(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE))
-        self.addToolBar(bar)
-        self.toolbar = bar
+    # ---------------------------------------------------------------- top bar
+    def _build_top_bar(self) -> None:
+        """Brand, the page strip, the repository and the model state: one row.
 
-        repo_label = QLabel("Repo:")
-        repo_label.setObjectName("fieldLabel")
-        repo_label.setAccessibleName("Repository selector label")
-        # the toolbar gives an unmeasured label as much room as it feels like,
-        # which on a real desktop clipped it to "Rep"; pin it to its own text
-        repo_label.setFixedWidth(
-            QFontMetrics(repo_label.font()).horizontalAdvance("Repo:") + SPACE_4
-        )
+        The strip lives up here rather than on top of the pages, so the tab is
+        the first thing on the window and the content below it is the whole
+        workspace.
+        """
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("topBar")
+        self.top_bar.setFixedHeight(TOP_BAR_HEIGHT)
+        row = QHBoxLayout(self.top_bar)
+        row.setContentsMargins(SPACE_12, 0, SPACE_12, 0)
+        row.setSpacing(SPACE_8)
+
+        brand = QLabel("selfkraken")
+        brand.setObjectName("brand")
+        brand_font = QFont(ui_family())
+        brand_font.setPointSizeF(FONT_PT + 1.5)
+        brand_font.setWeight(QFont.Weight.DemiBold)
+        brand.setFont(brand_font)
+        row.addWidget(brand)
+
+        self.tab_bar = QTabBar()
+        self.tab_bar.setObjectName("mainTabs")
+        self.tab_bar.setDrawBase(False)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setDocumentMode(True)
+        self.tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
+        self.tab_bar.setAccessibleName("Main pages")
+        row.addWidget(self.tab_bar)
+        row.addStretch(1)
+
         self.repo_combo = QComboBox()
         self.repo_combo.setMinimumWidth(REPO_COMBO_WIDTH)
         self.repo_combo.setFixedHeight(control_height(INPUT_HEIGHT, FONT_PT))
@@ -915,11 +1077,45 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
         self.repo_combo.setAccessibleName("Repository selector")
-        self.repo_combo.setToolTip("The repository every toolbar action works on")
+        self.repo_combo.setToolTip("The repository every action works on")
         self.repo_combo.currentIndexChanged.connect(self._on_repo_combo_changed)
-        bar.addWidget(repo_label)
-        bar.addWidget(self.repo_combo)
-        bar.addSeparator()
+        row.addWidget(self.repo_combo)
+
+        self.model_status = QLabel("")
+        self.model_status.setObjectName("modelPill")
+        self.model_status.setAccessibleName("Model status")
+        self.model_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.model_status.setFixedHeight(control_height(PILL_HEIGHT, FONT_PT))
+        self.model_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if self.settings.llm_enabled:
+            host = _host_of(self.settings.llm_base_url or "")
+            self.model_status.setText(f"Model: {self.settings.llm_model} @ {host}")
+            self.model_status.setToolTip(
+                "Proposals are generated by this OpenAI-compatible endpoint.\n"
+                "Configure it with SK_LLM_BASE_URL / SK_LLM_MODEL / SK_LLM_API_KEY\n"
+                "in the .env next to where you launch skraken."
+            )
+        else:
+            self.model_status.setText("Degraded mode — manual diff only")
+            self.model_status.setToolTip(
+                "No model is configured (that is fine — manual proposals still work).\n"
+                "To enable model proposals, set in .env:\n"
+                "  SK_LLM_BASE_URL=http://localhost:11434/v1\n"
+                "  SK_LLM_MODEL=qwen2.5-coder:7b\n"
+                "SK_LLM_API_KEY is optional (never printed, never stored).\n"
+                "Or paste a unified diff in the 'New proposal' section instead."
+            )
+        row.addWidget(self.model_status)
+
+    def _build_toolbar(self) -> None:
+        """One compact row: repo selector | actions | sample menu … model pill."""
+        bar = QToolBar("Actions")
+        bar.setObjectName("mainToolBar")
+        bar.setMovable(False)
+        bar.setFloatable(False)
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        bar.setIconSize(QSize(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE))
+        self.toolbar = bar
         for action in (self.act_add_repo, self.act_index, self.act_tests):
             bar.addAction(action)
         bar.addSeparator()
@@ -948,32 +1144,6 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
-
-        self.model_status = QLabel("")
-        self.model_status.setObjectName("modelPill")
-        self.model_status.setAccessibleName("Model status")
-        self.model_status.setTextFormat(Qt.TextFormat.PlainText)
-        # height comes from the stylesheet's min-height + padding, so a wider
-        # system font grows the pill instead of cutting its text off
-        if self.settings.llm_enabled:
-            host = _host_of(self.settings.llm_base_url or "")
-            self.model_status.setText(f"Model: {self.settings.llm_model} @ {host}")
-            self.model_status.setToolTip(
-                "Proposals are generated by this OpenAI-compatible endpoint.\n"
-                "Configure it with SK_LLM_BASE_URL / SK_LLM_MODEL / SK_LLM_API_KEY\n"
-                "in the .env next to where you launch skraken."
-            )
-        else:
-            self.model_status.setText("Degraded mode — manual diff only")
-            self.model_status.setToolTip(
-                "No model is configured (that is fine — manual proposals still work).\n"
-                "To enable model proposals, set in .env:\n"
-                "  SK_LLM_BASE_URL=http://localhost:11434/v1\n"
-                "  SK_LLM_MODEL=qwen2.5-coder:7b\n"
-                "SK_LLM_API_KEY is optional (never printed, never stored).\n"
-                "Or paste a unified diff in the 'New proposal' section instead."
-            )
-        bar.addWidget(self.model_status)
         self._align_toolbar_row(bar)
 
     def _align_toolbar_row(self, bar: QToolBar) -> None:
@@ -1004,9 +1174,9 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- central
     def _build_central(self) -> None:
-        self.tabs = QTabWidget()
+        self.tabs = CentreTabs(self.tab_bar)
         self.tabs.setObjectName("centerTabs")
-        self.tabs.setAccessibleName("Graph and proposals tabs")
+        self.tabs.setAccessibleName("Main pages")
 
         # -- Graph tab: guidance / no-commits / graph ----------------------
         self.graph_stack = QStackedWidget()
@@ -1071,15 +1241,20 @@ class MainWindow(QMainWindow):
         self.changes_page = self._build_changes_page()
         self.tabs.addTab(self.changes_page, "&Changes")
 
-        # -- Settings tab: sections on the left, the chosen one on the right --
+        # -- Settings: built here, added last by _finalize_tabs so it sits at
+        #    the end of the strip, the way a settings page always does --------
         self.settings_page = self._build_settings_page()
-        self.tabs.addTab(self.settings_page, "&Settings")
-        self.tabs.setTabsClosable(True)  # file tabs get a close button
         self.tabs.tabCloseRequested.connect(self._close_code_tab)
         self.tabs.currentChanged.connect(self._on_centre_tab_changed)
-        for index in range(PERMANENT_TABS):
-            self.tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
-        self.setCentralWidget(self.tabs)
+        central = QWidget()
+        central.setObjectName("shell")
+        shell = QVBoxLayout(central)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        shell.addWidget(self.top_bar)
+        shell.addWidget(self.toolbar)
+        shell.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
 
     def _on_centre_tab_changed(self, index: int) -> None:
         """Coming back to Changes re-checks the inline/side decision: the pane
@@ -1221,119 +1396,188 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- settings
     def _build_settings_page(self) -> QWidget:
-        """Settings: sections on the left, the chosen one on the right."""
+        """Settings: grouped sections on the left, the chosen one on the right."""
         page = QWidget()
         page.setObjectName("settingsPage")
         page.setAccessibleName("Settings")
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
-        outer.setSpacing(PANEL_SPACING)
 
-        title = QLabel("Settings")
-        font = title.font()
-        font.setPointSizeF(FONT_PT + 3)
-        font.setWeight(QFont.Weight.DemiBold)
-        title.setFont(font)
-        outer.addWidget(title)
+        body = QHBoxLayout(page)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
-        body = QHBoxLayout()
-        body.setSpacing(SPACE_12)
+        # -- the left column: what there is to set -------------------------
+        nav = QWidget()
+        nav.setObjectName("settingsNavPane")
+        nav.setFixedWidth(SETTINGS_NAV_WIDTH)
+        nav_box = QVBoxLayout(nav)
+        nav_box.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        nav_box.setSpacing(SPACE_2)
 
-        self.settings_nav = QListWidget()
-        self.settings_nav.setObjectName("settingsNav")
-        self.settings_nav.setAccessibleName("Settings sections")
-        self.settings_nav.setFixedWidth(190)
-        self.settings_nav.addItems(["Appearance", "About"])
-        self.settings_nav.setCurrentRow(0)
-        body.addWidget(self.settings_nav)
+        heading = QLabel("Settings")
+        heading_font = QFont(ui_family())
+        heading_font.setPointSizeF(FONT_PT + 3)
+        heading_font.setWeight(QFont.Weight.DemiBold)
+        heading.setFont(heading_font)
+        nav_box.addWidget(heading)
+        intro = QLabel("How selfkraken looks, and where it keeps your work.")
+        intro.setWordWrap(True)
+        intro.setObjectName("settingsIntro")
+        nav_box.addWidget(intro)
+        nav_box.addSpacing(SPACE_8)
 
         self.settings_stack = QStackedWidget()
+        self.settings_nav_items: list[SettingsNavItem] = []
+
+        self._add_nav_section(nav_box, "SETTINGS")
+        self._add_nav_item(
+            nav_box, 0, "Appearance", "the theme, and the fonts the window is drawn in"
+        )
+        self._add_nav_section(nav_box, "THIS INSTALLATION")
+        self._add_nav_item(
+            nav_box, 1, "About", "version, Python, Qt, data folder, database", APP_VERSION
+        )
+        nav_box.addStretch(1)
+        body.addWidget(nav)
+
+        # -- the right column: the section itself --------------------------
         self.settings_stack.addWidget(self._build_appearance_section())
         self.settings_stack.addWidget(self._build_about_section())
         body.addWidget(self.settings_stack, 1)
-        outer.addLayout(body, 1)
 
-        self.settings_nav.currentRowChanged.connect(self.settings_stack.setCurrentIndex)
+        self._select_nav(0)
         return page
+
+    def _add_nav_section(self, box: QVBoxLayout, title: str) -> None:
+        label = QLabel(title)
+        label.setObjectName("navSection")
+        box.addSpacing(SPACE_6)
+        box.addWidget(label)
+
+    def _add_nav_item(
+        self, box: QVBoxLayout, index: int, title: str, note: str, value: str = ""
+    ) -> None:
+        item = SettingsNavItem(title, note, value, self.palette)
+        item.clicked.connect(lambda i=index: self._select_nav(i))
+        self.settings_nav_items.append(item)
+        box.addWidget(item)
+
+    def _select_nav(self, index: int) -> None:
+        if index >= self.settings_stack.count():
+            return
+        self.settings_stack.setCurrentIndex(index)
+        for position, item in enumerate(self.settings_nav_items):
+            item.set_selected(position == index)
+
+    def _card(self, title: str, note: str = "") -> tuple[QFrame, QVBoxLayout]:
+        """A bordered card with an uppercase header, as the reference uses."""
+        card = QFrame()
+        card.setObjectName("settingsCard")
+        column = QVBoxLayout(card)
+        column.setContentsMargins(
+            MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
+        )
+        column.setSpacing(SPACE_8)
+
+        header = QLabel(title.upper())
+        header.setObjectName("cardTitle")
+        column.addWidget(header)
+        if note:
+            caption = QLabel(note)
+            caption.setObjectName("cardNote")
+            caption.setWordWrap(True)
+            column.addWidget(caption)
+        return card, column
 
     def _build_appearance_section(self) -> QWidget:
         section = QWidget()
         box = QVBoxLayout(section)
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(PANEL_SPACING)
-        box.addWidget(SectionHeader("Appearance", self.palette))
+        box.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        box.setSpacing(SPACE_12)
 
-        caption = QLabel("Theme")
-        caption.setStyleSheet(f"color: {self.palette.muted};")
-        box.addWidget(caption)
+        title = QLabel("Appearance")
+        title_font = QFont(ui_family())
+        title_font.setPointSizeF(FONT_PT + 3)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        title.setFont(title_font)
+        box.addWidget(title)
 
+        card, column = self._card(
+            "Theme",
+            "Dark is Spartan Dark; light is GitHub Light; System follows the desktop.",
+        )
         row = QHBoxLayout()
         row.setSpacing(SPACE_8)
         self.theme_cards = QButtonGroup(self)
         self.theme_cards.setExclusive(True)
-        options = (
+        for name, label, swatch in (
             ("dark", "Dark", DARK),
             ("light", "Light", LIGHT),
             ("auto", "System", resolve("auto", prefers_dark=_system_prefers_dark())),
-        )
-        for name, label, swatch in options:
-            card = ThemeCard(label, swatch)
-            card.setProperty("theme", name)
-            card.setChecked(name == self._theme_choice)
-            card.clicked.connect(lambda _checked=False, n=name: self.set_theme(n))
-            self.theme_cards.addButton(card)
-            row.addWidget(card)
+        ):
+            choice = ThemeCard(label, swatch, self.palette)
+            choice.setProperty("theme", name)
+            choice.setChecked(name == self._theme_choice)
+            choice.clicked.connect(lambda _checked=False, n=name: self.set_theme(n))
+            self.theme_cards.addButton(choice)
+            row.addWidget(choice)
         row.addStretch(1)
-        box.addLayout(row)
+        column.addLayout(row)
+        box.addWidget(card)
 
-        hint = QLabel(
-            "System follows the desktop's light or dark preference. "
-            "The choice is remembered next time the window opens."
+        card, column = self._card(
+            "Type", "Switzer for the interface, IBM Plex Mono for code, paths and the log."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {self.palette.muted};")
-        box.addWidget(hint)
+        for name, value in (("Interface", ui_family()), ("Console", mono_family())):
+            line = QHBoxLayout()
+            key = QLabel(name)
+            key.setObjectName("cardKey")
+            key.setFixedWidth(96)
+            text = QLabel(value)
+            text.setObjectName("cardValue")
+            line.addWidget(key)
+            line.addWidget(text, 1)
+            column.addLayout(line)
+        box.addWidget(card)
         box.addStretch(1)
         return section
 
     def _build_about_section(self) -> QWidget:
         section = QWidget()
         box = QVBoxLayout(section)
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(PANEL_SPACING)
-        box.addWidget(SectionHeader("About", self.palette))
+        box.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        box.setSpacing(SPACE_12)
 
-        rows = (
+        title = QLabel("About")
+        title_font = QFont(ui_family())
+        title_font.setPointSizeF(FONT_PT + 3)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        title.setFont(title_font)
+        box.addWidget(title)
+
+        card, column = self._card("This installation")
+        for key, value in (
             ("Version", APP_VERSION),
             ("Python", platform.python_version()),
             ("Qt", qVersion()),
             ("Data folder", str(self.settings.data_dir)),
             ("Database", str(self.settings.db_path)),
-        )
-        for key, value in rows:
-            line = QWidget()
-            grid = QHBoxLayout(line)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(SPACE_8)
+        ):
+            line = QHBoxLayout()
             name = QLabel(key)
+            name.setObjectName("cardKey")
             name.setFixedWidth(96)
-            name.setStyleSheet(f"color: {self.palette.muted};")
             text = QLabel(str(value))
+            text.setObjectName("cardValue")
             text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            grid.addWidget(name)
-            grid.addWidget(text, 1)
-            box.addWidget(line)
+            line.addWidget(name)
+            line.addWidget(text, 1)
+            column.addLayout(line)
+        box.addWidget(card)
         box.addStretch(1)
         return section
 
-    # -------------------------------------------------------------- left dock
-    def _build_left_dock(self) -> None:
-        dock = self._make_dock("Repository", "leftDock")
-        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
-        self.left_tabs = QTabWidget()
-        self.left_tabs.setObjectName("leftTabs")
-        self.left_tabs.setAccessibleName("Repository views")
-
+    def _build_left_pages(self) -> None:
+        """Files and Branches as pages of the workspace, not side panels."""
         self.file_model = FileTreeModel(self.palette, self)
         self.files_view = QTreeView()
         self.files_view.setModel(self.file_model)
@@ -1363,19 +1607,12 @@ class MainWindow(QMainWindow):
         self.branches_stack.addWidget(self.branches_empty)
         self.branches_stack.addWidget(self.branches_view)
 
-        self.left_tabs.addTab(self.files_stack, "&Files")
-        self.left_tabs.addTab(self.branches_stack, "&Branches")
-        dock.setWidget(self.left_tabs)
-        dock.setMinimumWidth(DOCK_MIN_WIDTH)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        self.left_dock = dock
+        self.tabs.addTab(self.files_stack, "&Files")
+        self.tabs.addTab(self.branches_stack, "&Branches")
 
     # ------------------------------------------------------------- right dock
-    def _build_right_dock(self) -> None:
-        """The review column: stacked sections, no boxes inside boxes."""
-        dock = self._make_dock("Review", "rightDock")
-        dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
-        dock.setMinimumWidth(REVIEW_MIN_WIDTH)
+    def _build_review_page(self) -> None:
+        """The review column, as a page of the workspace."""
 
         inner = QWidget()
         inner.setObjectName("reviewPane")
@@ -1664,11 +1901,18 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        dock.setWidget(scroll)
+        # keep the column readable: it is a page now, so it is centred in a
+        # bounded width instead of stretching across a wide window
+        page = QWidget()
+        page.setObjectName("reviewPage")
+        page_row = QHBoxLayout(page)
+        page_row.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        page_row.addWidget(scroll)
+        page_row.addStretch(1)
+        scroll.setMaximumWidth(REVIEW_PAGE_WIDTH)
         self.right_scroll = scroll
         self._right_ready = True
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        self.right_dock = dock
+        self.tabs.addTab(page, "&Review")
 
     def _sync_review_minimum(self) -> None:
         """Let the review pane scroll rather than crush the diff viewer.
@@ -1721,26 +1965,16 @@ class MainWindow(QMainWindow):
         dock.setWidget(self.log_table)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
         self.bottom_dock = dock
-        self._apply_dock_ratios()
         self.resizeDocks([dock], [ACTIVITY_LOG_HEIGHT], Qt.Orientation.Vertical)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt name
         super().showEvent(event)
         if not self._docks_balanced:
             self._docks_balanced = True
-            self._apply_dock_ratios()
             # once more now that the dock has a real height to be compared with
+            QTimer.singleShot(0, self._fit_tab_strip)
             QTimer.singleShot(0, lambda: self._fit_log_dock(force=True))
             QTimer.singleShot(0, self._apply_start_hooks)
-
-    def _apply_dock_ratios(self) -> None:
-        """Left dock ~16% of the window, review pane ~34%, graph keeps the rest."""
-        width = max(self.width(), MIN_WINDOW_WIDTH)
-        self.resizeDocks(
-            [self.left_dock, self.right_dock],
-            [round(width * LEFT_DOCK_RATIO), round(width * REVIEW_DOCK_RATIO)],
-            Qt.Orientation.Horizontal,
-        )
 
     def _make_dock(self, title: str, object_name: str) -> QDockWidget:
         """A dock with the one compact title bar the whole window uses.
@@ -1769,26 +2003,58 @@ class MainWindow(QMainWindow):
         self.status_busy = BusyBar(width=SPACE_12 * 8)
         bar.addPermanentWidget(self.status_busy)
 
-    def _build_menu(self) -> None:
-        app_menu = self.menuBar().addMenu("&selfkraken")
-        app_menu.addAction(self.act_add_repo)
-        app_menu.addAction(self.act_index)
-        app_menu.addAction(self.act_tests)
-        app_menu.addSeparator()
-        app_menu.addAction(self.act_export)
-        app_menu.addAction(self.act_import)
-        app_menu.addSeparator()
-        app_menu.addAction(self.act_sample_load)
-        app_menu.addAction(self.act_sample_remove)
-        app_menu.addSeparator()
-        app_menu.addAction(self.act_refresh)
-        app_menu.addAction(self.act_quit)
-        views_menu = self.menuBar().addMenu("&Views")
-        views_menu.addAction(self.act_tab_graph)
-        views_menu.addAction(self.act_tab_proposals)
-        views_menu.addAction(self.act_tab_changes)
-        help_menu = self.menuBar().addMenu("&Help")
-        help_menu.addAction(self.act_help)
+    def _build_more_menu(self) -> None:
+        """The few window-level commands, behind one button in the action row."""
+        menu = QMenu(self)
+        menu.addAction(self.act_refresh)
+        menu.addSeparator()
+        for action in (
+            self.act_tab_graph,
+            self.act_tab_proposals,
+            self.act_tab_changes,
+            self.act_tab_files,
+            self.act_tab_review,
+        ):
+            menu.addAction(action)
+        menu.addSeparator()
+        menu.addAction(self.act_help)
+        menu.addAction(self.act_quit)
+
+        self.more_button = QToolButton()
+        self.more_button.setText("More ▾")
+        self.more_button.setMenu(menu)
+        self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.more_button.setFixedHeight(control_height(BUTTON_HEIGHT, FONT_PT))
+        self.more_button.setAccessibleName("More commands")
+        self.toolbar.addWidget(self.more_button)
+
+        # actions that are no longer in a menubar still need their shortcuts
+        for action in (
+            self.act_refresh,
+            self.act_tab_graph,
+            self.act_tab_proposals,
+            self.act_tab_changes,
+            self.act_tab_files,
+            self.act_tab_review,
+            self.act_help,
+            self.act_quit,
+        ):
+            self.addAction(action)
+
+    def _fit_tab_strip(self) -> None:
+        """Keep every page name whole: the strip never elides a permanent tab."""
+        width = self.tab_bar.sizeHint().width()
+        self.tab_bar.setMinimumWidth(width)
+
+    def _finalize_tabs(self) -> None:
+        """Only file tabs close: the pages are the shell, not documents."""
+        self.tabs.addTab(self.settings_page, "&Settings")
+        self.tabs.setTabsClosable(True)
+        self._fit_tab_strip()
+        for index in range(PERMANENT_TABS):
+            self.tabs.tabBar().setTabButton(
+                index, QTabBar.ButtonPosition.RightSide, None
+            )
 
     def _set_tab_order(self) -> None:
         """One focus walk: toolbar → repository views → review → log.
@@ -1802,7 +2068,7 @@ class MainWindow(QMainWindow):
             self.repo_combo,
             self.act_add_repo, self.act_index, self.act_tests,
             self.act_export, self.act_import, self.sample_button,
-            self.left_tabs, self.files_view, self.branches_view,
+            self.tab_bar, self.files_view, self.branches_view,
             self.graph_view, self.proposals_table, self.diff_files,
             self.diff_view, self.side_by_side_button,
             self.new_proposal_toggle, self.request_edit, self.paths_edit,

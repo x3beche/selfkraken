@@ -44,6 +44,13 @@ PANEL_SPACING: Final[int] = SPACE_8
 # --------------------------------------------------------------------------- #
 BORDER_WIDTH: Final[int] = 1
 RADIUS: Final[int] = 4  #: inputs, buttons, badges, chips — everything rounded
+#: the shell: brand + page strip on top, the action row under it
+TOP_BAR_HEIGHT: Final[int] = 44
+ACTION_BAR_HEIGHT: Final[int] = 34
+#: a page is the whole workspace; the review column stays readable, not wide
+REVIEW_PAGE_WIDTH: Final[int] = 860
+#: the settings column: grouped sections, each row title + note + value
+SETTINGS_NAV_WIDTH: Final[int] = 288
 RADIUS_PILL: Final[int] = 9  #: half the pill height, so it reads as a capsule
 
 ROW_HEIGHT: Final[int] = 22  #: tables, trees, dock titles
@@ -209,97 +216,99 @@ class Palette:
 
 DARK: Final[Palette] = Palette(
     name="dark",
-    # flat greys, one blue: panels and page are the same tone and the 1px line
-    # is what separates them, so nothing reads as a raised card.
-    window="#444444",
-    panel="#444444",
-    base="#333333",
-    surface="#333333",
-    stripe="#3d3d3d",
-    text="#dddddd",
-    muted="#a0a0a0",
-    border="#5a5a5a",
-    accent="#53a0e3",
-    accent_text="#12222e",
-    selection_bg="#48627a",
-    selection_text="#ffffff",
-    ok="#5c8a5c",
-    err="#cc3333",
-    warning="#e8a735",
-    error_bg="#3a2323",
-    hover="#686868",
-    pressed="#5e5e5e",
+    # Spartan Dark (spartan-ng / shadcn zinc): near-black, one white accent,
+    # orange as the only warm note. Panels and page share a tone; the 1px line
+    # and the card fill do the separating.
+    window="#09090b",
+    panel="#09090b",
+    base="#09090b",
+    surface="#18181b",
+    stripe="#18181b",
+    text="#fafafa",
+    muted="#a1a1aa",
+    border="#27272a",
+    accent="#fafafa",
+    accent_text="#18181b",
+    selection_bg="#27272a",
+    selection_text="#fafafa",
+    ok="#2eb88a",
+    err="#ef4444",
+    warning="#e88c30",
+    error_bg="#2a1315",
+    hover="#27272a",
+    pressed="#3f3f46",
     pen="#ff2d3f",
     lanes=(
-        "#4a90d9", "#e8a735", "#5bb85f", "#c964a8",
-        "#3fa9a0", "#e8615a", "#7a6bd6", "#8a9a5b",
+        "#2662d9", "#e88c30", "#2eb88a", "#af57db",
+        "#e23670", "#ef4444", "#38bdf8", "#a1a1aa",
     ),
     status={
-        "proposed": ("#79b8ea", "#26384a"),
-        "applied": ("#e8a735", "#3a2c12"),
-        "tests_passed": ("#8fbf8f", "#1e2d1e"),
-        "tests_failed": ("#e88a8a", "#3a1c1c"),
-        "rejected": ("#b4b4b4", "#3a3a3a"),
-        "reverted": ("#a79cc9", "#2c2638"),
+        "proposed": ("#8ab4f8", "#16233a"),
+        "applied": ("#e88c30", "#2e2113"),
+        "tests_passed": ("#2eb88a", "#10241e"),
+        "tests_failed": ("#ef4444", "#2a1416"),
+        "rejected": ("#a1a1aa", "#1c1c1f"),
+        "reverted": ("#af57db", "#251a2c"),
     },
     badge={
-        "head": ("#12222e", "#53a0e3", "#53a0e3"),
-        "local": ("#9ccf9c", "#26332a", "#3f5f3f"),
-        "remote": ("#c4c4c4", "#3a3a3a", "#5a5a5a"),
-        "tag": ("#e8a735", "#3a2c12", "#7a5a1f"),
+        "head": ("#18181b", "#fafafa", "#fafafa"),
+        "local": ("#2eb88a", "#10241e", "#1d4d3c"),
+        "remote": ("#a1a1aa", "#18181b", "#27272a"),
+        "tag": ("#e88c30", "#2e2113", "#5a3a15"),
     },
     diff={
-        "add": ("#9ccf9c", "#252f25"),
-        "del": ("#e88a8a", "#332020"),
-        "hunk": ("#53a0e3", "#26323c"),  # the accent, not a third hue
-        "header": ("#dddddd", ""),
+        "add": ("#2eb88a", "#10241e"),
+        "del": ("#ef4444", "#2a1416"),
+        "hunk": ("#fafafa", "#1c1c1f"),  # the accent, not a third hue
+        "header": ("#fafafa", ""),
     },
 )
 
 LIGHT: Final[Palette] = Palette(
     name="light",
-    window="#eceef1",
-    panel="#eceef1",
-    base="#f6f7f9",
-    surface="#f6f7f9",
-    stripe="#e4e7eb",
-    text="#232a31",
-    muted="#5e6873",
-    border="#c3c9d1",
-    accent="#1d6fb8",
-    accent_text="#f2f8ff",
-    selection_bg="#bcd6ee",
-    selection_text="#12222e",
-    ok="#3d7a3d",
-    err="#b52a2a",
-    warning="#a86a06",
-    error_bg="#f7dede",
-    hover="#dfe3e8",
-    pressed="#d2d8df",
+    # GitHub Light (Primer): white page, grey wells, one blue.
+    window="#ffffff",
+    panel="#ffffff",
+    base="#f6f8fa",
+    surface="#f6f8fa",
+    stripe="#f6f8fa",
+    text="#1f2328",
+    muted="#656d76",
+    border="#d0d7de",
+    accent="#0969da",
+    accent_text="#ffffff",
+    selection_bg="#ddf4ff",
+    selection_text="#1f2328",
+    ok="#1a7f37",
+    err="#cf222e",
+    warning="#9a6700",
+    error_bg="#ffebe9",
+    hover="#f3f4f6",
+    pressed="#e7eaef",
     pen="#e00d22",
     lanes=(
-        "#2f6fa8", "#a86a06", "#3d7a3d", "#9a4b80",
-        "#2f7f78", "#b52a2a", "#5b4fb0", "#6a7440",
+        "#0969da", "#bc4c00", "#1a7f37", "#8250df",
+        "#bf3989", "#cf222e", "#0598a8", "#6e7781",
     ),
     status={
-        "proposed": ("#1d4f7a", "#d6e6f4"),
-        "applied": ("#7a4c04", "#f6e6cc"),
-        "tests_passed": ("#2c5c2c", "#dcecdc"),
-        "tests_failed": ("#8c2020", "#f7dede"),
-        "rejected": ("#4e5761", "#e2e5e9"),
-        "reverted": ("#4b3f75", "#e6e2f2"),
+        "proposed": ("#0969da", "#ddf4ff"),
+        "applied": ("#bc4c00", "#fff1e5"),
+        "tests_passed": ("#1a7f37", "#dafbe1"),
+        "tests_failed": ("#cf222e", "#ffebe9"),
+        "rejected": ("#656d76", "#eff1f3"),
+        "reverted": ("#8250df", "#f3e8ff"),
     },
     badge={
-        "head": ("#f2f8ff", "#1d6fb8", "#1d6fb8"),
-        "local": ("#2c5c2c", "#dcecdc", "#9cc09c"),
-        "remote": ("#4e5761", "#eef0f3", "#c3c9d1"),
-        "tag": ("#7a4c04", "#f6e6cc", "#d3ae72"),
+        "head": ("#ffffff", "#0969da", "#0969da"),
+        "local": ("#1a7f37", "#dafbe1", "#8ddb9a"),
+        "remote": ("#656d76", "#f6f8fa", "#d0d7de"),
+        "tag": ("#9a6700", "#fff8c5", "#e3c05a"),
     },
     diff={
-        "add": ("#2c5c2c", "#dcecdc"),
-        "del": ("#8c2020", "#f7dede"),
-        "hunk": ("#1d6fb8", "#dbe8f4"),  # the accent
-        "header": ("#232a31", ""),
+        "add": ("#1a7f37", "#dafbe1"),
+        "del": ("#cf222e", "#ffebe9"),
+        "hunk": ("#0969da", "#ddf4ff"),
+        "header": ("#1f2328", ""),
     },
 )
 
@@ -451,6 +460,65 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     }}
     QCheckBox {{ spacing: {SPACE_4}px; background: transparent; }}
     QCheckBox::indicator {{ width: 13px; height: 13px; }}
+
+    /* ------------------------------------------------------------- settings */
+    QWidget#settingsNavPane {{
+        background: {p.window};
+        border: none;
+        border-right: {BORDER_WIDTH}px solid {p.border};
+    }}
+    QLabel#settingsIntro {{ color: {p.muted}; font-size: {META_PT:g}pt; }}
+    QLabel#navSection {{
+        color: {p.muted}; font-size: {META_PT:g}pt; font-weight: 600;
+        letter-spacing: 0.08em; padding: {SPACE_4}px {SPACE_8}px {SPACE_2}px {SPACE_8}px;
+    }}
+    QFrame#navItem {{ background: transparent; border: {BORDER_WIDTH}px solid transparent;
+        border-radius: {RADIUS}px; }}
+    QFrame#navItem:hover {{ background: {p.hover}; }}
+    QFrame#navItem[selected="true"] {{ background: {p.surface}; border-color: {p.border}; }}
+    QLabel#navTitle {{ color: {p.text}; font-weight: 600; background: transparent; }}
+    QLabel#navDesc {{ color: {p.muted}; font-size: {META_PT:g}pt; background: transparent; }}
+    QLabel#navValue {{ color: {p.muted}; font-size: {META_PT:g}pt; background: transparent; }}
+
+    QFrame#settingsCard {{
+        background: {p.surface};
+        border: {BORDER_WIDTH}px solid {p.border};
+        border-radius: 6px;
+    }}
+    QLabel#cardTitle {{
+        color: {p.muted}; font-size: {META_PT:g}pt; font-weight: 600;
+        letter-spacing: 0.08em; background: transparent;
+    }}
+    QLabel#cardNote {{ color: {p.muted}; font-size: {META_PT:g}pt; background: transparent; }}
+    QLabel#cardKey {{ color: {p.muted}; background: transparent; }}
+    QLabel#cardValue {{ color: {p.text}; background: transparent; }}
+
+    /* ---------------------------------------------------------------- shell */
+    QFrame#topBar {{
+        background: {p.window};
+        border: none;
+        border-bottom: {BORDER_WIDTH}px solid {p.border};
+    }}
+    QLabel#brand {{
+        color: {p.text};
+        font-weight: 600;
+        padding-right: {SPACE_8}px;
+    }}
+    QTabBar#mainTabs {{ background: transparent; }}
+    QTabBar#mainTabs::tab {{
+        background: transparent; color: {p.muted};
+        border: {BORDER_WIDTH}px solid transparent; border-radius: {RADIUS}px;
+        padding: {SPACE_4}px {SPACE_12}px; margin-right: {SPACE_2}px;
+        min-height: {ROW_HEIGHT - 2 * SPACE_4 - BORDER_WIDTH}px;
+    }}
+    QTabBar#mainTabs::tab:hover:!selected {{ background: {p.hover}; color: {p.text}; }}
+    QTabBar#mainTabs::tab:selected {{ background: {p.hover}; color: {p.text}; font-weight: 600; }}
+    QWidget#shell {{ background: {p.window}; }}
+    QToolBar#mainToolBar {{
+        background: {p.window}; border: none;
+        border-bottom: {BORDER_WIDTH}px solid {p.border};
+        padding: {SPACE_2}px {SPACE_12}px; spacing: {SPACE_2}px;
+    }}
 
     /* ------------------------------------------------------- dock widgets */
     QDockWidget {{
