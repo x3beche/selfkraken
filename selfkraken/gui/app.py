@@ -72,6 +72,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QStyle,
@@ -96,6 +97,7 @@ from selfkraken.workflow import ApplyOutcome, DEGRADED_MODE_HINT
 
 from selfkraken.gui import monaco_payload as monaco_api
 from selfkraken.gui import fonts as ui_fonts
+from selfkraken.gui import theme as theme_module
 from selfkraken.gui.diff_view import DiffHighlighter, monospace_font
 from selfkraken.gui.graph_widget import GraphView, read_commit_detail
 from selfkraken.gui.monaco_view import MonacoView
@@ -143,6 +145,9 @@ from selfkraken.gui.theme import (
     SPACE_6,
     SPACE_8,
     COMMIT_DIFF_WIDTH,
+    DIFF_FONT_MAX,
+    DIFF_FONT_MIN,
+    DIFF_FONT_SIZE,
     FILES_PANE_WIDTH,
     REVIEW_PAGE_WIDTH,
     SETTINGS_NAV_WIDTH,
@@ -920,6 +925,7 @@ class MainWindow(QMainWindow):
         self.palette: Palette = resolve(
             self._theme_choice, prefers_dark=_system_prefers_dark()
         )
+        self._diff_font_size = self._stored_int("diff_font_size", DIFF_FONT_SIZE)
         # the stored choice may differ from the launch flag, so the window owns
         # applying its palette; without this the stylesheet kept the flag's
         instance = QApplication.instance()
@@ -1281,6 +1287,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _on_centre_tab_changed(self, index: int) -> None:
+        # Settings is about the app, not about a diff: give it the width
+        if hasattr(self, "diff_pane"):
+            self.diff_pane.setVisible(index != TAB_SETTINGS)
         """Coming back to Changes re-checks the inline/side decision: the pane
         had no width to measure while it was hidden, so the strip and the editor
         may still show what the last visible size implied."""
@@ -1353,7 +1362,9 @@ class MainWindow(QMainWindow):
         )
         box.addWidget(self.diff_files, 0)
 
-        self.diff_view = MonacoView(self.palette, name="proposal diff")
+        self.diff_view = MonacoView(
+            self.palette, name="proposal diff", font_size=self._diff_font_size
+        )
         self.diff_view.setMinimumHeight(box_height_for(self.diff_view, DIFF_MIN_LINES))
         box.addWidget(self.diff_view, 1)
 
@@ -1371,6 +1382,19 @@ class MainWindow(QMainWindow):
         self.diff_view.clear()
 
     # ---------------------------------------------------------------- themes
+    def _stored_window_state(self) -> dict:
+        try:
+            return json.loads(self._geometry_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _stored_int(self, key: str, fallback: int) -> int:
+        try:
+            value = int(self._stored_window_state().get(key, fallback))
+        except (TypeError, ValueError):
+            return fallback
+        return max(DIFF_FONT_MIN, min(value, DIFF_FONT_MAX))
+
     def _stored_theme(self) -> Optional[str]:
         """The theme picked in Settings last time, if the file still has one."""
         try:
@@ -1378,7 +1402,8 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError):
             return None
         choice = str(stored.get("theme", "")).strip().lower()
-        return choice if choice in ("auto", "dark", "light") else None
+        known = set(theme_module.theme_names()) | set(theme_module.ALIASES)
+        return choice if choice in known or choice == "auto" else None
 
     def set_theme(self, name: str) -> None:
         """Apply a theme now, and keep it for the next start.
@@ -1387,8 +1412,9 @@ class MainWindow(QMainWindow):
         hands the new one to each of them and repaints, rather than rebuilding
         the window and losing the open repository, tab and selection.
         """
+        known = set(theme_module.theme_names()) | set(theme_module.ALIASES)
         choice = (name or "auto").strip().lower()
-        if choice not in ("auto", "dark", "light"):
+        if choice != "auto" and choice not in known:
             choice = "auto"
         self._theme_choice = choice
         self.palette = resolve(choice, prefers_dark=_system_prefers_dark())
@@ -1399,8 +1425,9 @@ class MainWindow(QMainWindow):
         self._push_palette(self)
         group = getattr(self, "theme_cards", None)
         if group is not None:
+            key = theme_module.ALIASES.get(choice, choice)
             for card in group.buttons():
-                card.setChecked(card.property("theme") == choice)
+                card.setChecked(card.property("theme") == key)
 
         graph = getattr(self, "graph_view", None)
         if graph is not None and isinstance(getattr(graph, "palette", None), Palette):
@@ -1554,25 +1581,55 @@ class MainWindow(QMainWindow):
 
         card, column = self._card(
             "Theme",
-            "Dark is Spartan Dark; light is GitHub Light; System follows the desktop.",
+            "Every theme the design ships: dark grounds first, light grounds after.",
         )
-        row = QHBoxLayout()
-        row.setSpacing(SPACE_8)
+        scroll = QScrollArea()
+        scroll.setObjectName("themePicker")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(SPACE_6)
+
         self.theme_cards = QButtonGroup(self)
         self.theme_cards.setExclusive(True)
-        for name, label, swatch in (
-            ("dark", "Dark", DARK),
-            ("light", "Light", LIGHT),
-            ("auto", "System", resolve("auto", prefers_dark=_system_prefers_dark())),
-        ):
-            choice = ThemeCard(label, swatch, self.palette)
+        current = theme_module.ALIASES.get(self._theme_choice, self._theme_choice)
+        per_row = 3
+        for position, name in enumerate(theme_module.theme_names()):
+            palette = theme_module.THEMES[name]
+            choice = ThemeCard(theme_module.theme_label(name), palette, self.palette)
             choice.setProperty("theme", name)
-            choice.setChecked(name == self._theme_choice)
+            choice.setChecked(name == current)
             choice.clicked.connect(lambda _checked=False, n=name: self.set_theme(n))
             self.theme_cards.addButton(choice)
-            row.addWidget(choice)
-        row.addStretch(1)
-        column.addLayout(row)
+            grid.addWidget(choice, position // per_row, position % per_row)
+        grid.setColumnStretch(per_row, 1)
+        scroll.setWidget(holder)
+        scroll.setMinimumHeight(3 * 104)
+        column.addWidget(scroll)
+        box.addWidget(card)
+
+        card, column = self._card(
+            "Diff", "The size of the patch text in the diff column and in opened files."
+        )
+        size_row = QHBoxLayout()
+        size_row.setSpacing(SPACE_8)
+        size_label = QLabel("Text size")
+        size_label.setObjectName("cardKey")
+        size_label.setFixedWidth(96)
+        self.diff_size_spin = QSpinBox()
+        self.diff_size_spin.setRange(DIFF_FONT_MIN, DIFF_FONT_MAX)
+        self.diff_size_spin.setSuffix(" px")
+        self.diff_size_spin.setValue(self._diff_font_size)
+        self.diff_size_spin.setAccessibleName("Diff text size in pixels")
+        self.diff_size_spin.setFixedWidth(90)
+        self.diff_size_spin.valueChanged.connect(self.set_diff_font_size)
+        size_row.addWidget(size_label)
+        size_row.addWidget(self.diff_size_spin)
+        size_row.addStretch(1)
+        column.addLayout(size_row)
         box.addWidget(card)
 
         card, column = self._card(
@@ -2177,6 +2234,22 @@ class MainWindow(QMainWindow):
         width = self.tab_bar.sizeHint().width()
         self.tab_bar.setMinimumWidth(width)
 
+    def set_diff_font_size(self, pixels: int) -> None:
+        """Resize the diff text everywhere, and remember the choice."""
+        size = max(DIFF_FONT_MIN, min(int(pixels), DIFF_FONT_MAX))
+        self._diff_font_size = size
+        spin = getattr(self, "diff_size_spin", None)
+        if spin is not None and spin.value() != size:
+            spin.blockSignals(True)
+            spin.setValue(size)
+            spin.blockSignals(False)
+        if hasattr(self, "diff_view"):
+            self.diff_view.set_font_size(size)
+        for view, _text in getattr(self, "_open_files", {}).values():
+            if isinstance(view, MonacoView):
+                view.set_font_size(size)
+        self._save_geometry()
+
     def _focus_explorer(self) -> None:
         """Ctrl+4: put the cursor in the file search, the column's front door."""
         self.explorer_search.setFocus()
@@ -2433,6 +2506,30 @@ class MainWindow(QMainWindow):
         if force or untouched:
             self.resizeDocks([self.bottom_dock], [height], Qt.Orientation.Vertical)
             self._log_dock_height = height
+            # the layout that answers the resize can differ by a few pixels from
+            # the estimate above (a scrollbar appears, the splitter rounds);
+            # one measured correction lands the viewport on whole rows
+            QTimer.singleShot(0, lambda: self._trim_log_dock(row_height))
+
+    def _trim_log_dock(self, row_height: int) -> None:
+        """Snap the log viewport to the nearest whole number of rows."""
+        table = self.log_table
+        viewport = table.viewport().height()
+        dock_height = self.bottom_dock.height()
+        if row_height <= 0 or viewport <= 0 or dock_height <= viewport:
+            return
+        rows = max(viewport // row_height, 1)
+        overhead = dock_height - viewport
+        wanted = overhead + rows * row_height
+        if wanted != dock_height:
+            self.resizeDocks([self.bottom_dock], [wanted], Qt.Orientation.Vertical)
+            self._log_dock_height = wanted
+        # and pin the table itself: a squeezed dock must show whole rows, not a
+        # sliced last one, however little height the layout gives it
+        table_height = table.height()
+        target = rows * row_height
+        if viewport != target and table_height > viewport - target:
+            table.setFixedHeight(table_height - (viewport - target))
 
     def reload_all(self, select_id: Optional[int] = None) -> None:
         """Full reload after a mutation that can change the whole world."""
@@ -3001,7 +3098,12 @@ class MainWindow(QMainWindow):
     ) -> None:
         if token != self._file_request:
             return
-        view = MonacoView(self.palette, parent=None, name=path.rsplit("/", 1)[-1])
+        view = MonacoView(
+            self.palette,
+            parent=None,
+            name=path.rsplit("/", 1)[-1],
+            font_size=self._diff_font_size,
+        )
         if text is None:
             view.show_message(
                 f"{path}\n\nNot shown: the file is binary, missing, or too large "
@@ -3362,6 +3464,7 @@ class MainWindow(QMainWindow):
             maximised = False
         state = {
             "theme": getattr(self, "_theme_choice", "auto"),
+            "diff_font_size": getattr(self, "_diff_font_size", DIFF_FONT_SIZE),
             "x": rect.x(),
             "y": rect.y(),
             "w": rect.width(),

@@ -879,7 +879,7 @@ def test_settings_appearance_switches_theme_and_remembers_it(
         assert window.palette.name == "dark"
         window.set_theme("light")
         assert window.palette.name == "light"
-        assert window.theme_cards.checkedButton().text() == "Light"
+        assert window.theme_cards.checkedButton().text() == "GitHub Light"
 
         stored = json.loads(
             (Path(gui_settings.data_dir) / WINDOW_STATE_FILENAME).read_text(

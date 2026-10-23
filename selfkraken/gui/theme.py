@@ -14,8 +14,10 @@ anywhere.  Colours are picked for WCAG-AA contrast (≥4.5:1 for body text,
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Final
+
+from selfkraken.gui.palettes import THEME_TOKENS
 
 # --------------------------------------------------------------------------- #
 # spacing scale — the only horizontal/vertical gaps the UI uses
@@ -118,6 +120,10 @@ MONO_FALLBACKS: Final[tuple[str, ...]] = (
 FONT_PT: Final[float] = 9.0      # 12px: the UI's body size
 META_PT: Final[float] = 8.0     # 10.5px: section labels, counters, hints
 MONO_PT: Final[float] = 8.5     # 11px: paths, log lines, diff
+#: the diff editor's text size in pixels (Settings > Appearance > Diff)
+DIFF_FONT_SIZE: Final[int] = 12
+DIFF_FONT_MIN: Final[int] = 9
+DIFF_FONT_MAX: Final[int] = 20
 
 # --------------------------------------------------------------------------- #
 # resolved font families
@@ -217,103 +223,131 @@ class Palette:
     diff: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
-DARK: Final[Palette] = Palette(
-    name="dark",
-    # Spartan Dark (spartan-ng / shadcn zinc): near-black, one white accent,
-    # orange as the only warm note. Panels and page share a tone; the 1px line
-    # and the card fill do the separating.
-    window="#09090b",
-    panel="#09090b",
-    base="#09090b",
-    surface="#18181b",
-    stripe="#18181b",
-    text="#fafafa",
-    muted="#a1a1aa",
-    border="#27272a",
-    accent="#fafafa",
-    accent_text="#18181b",
-    selection_bg="#27272a",
-    selection_text="#fafafa",
-    ok="#2eb88a",
-    err="#ef4444",
-    warning="#e88c30",
-    error_bg="#2a1315",
-    hover="#27272a",
-    pressed="#3f3f46",
-    pen="#ff2d3f",
-    lanes=(
-        "#2662d9", "#e88c30", "#2eb88a", "#af57db",
-        "#e23670", "#ef4444", "#38bdf8", "#a1a1aa",
-    ),
-    status={
-        "proposed": ("#8ab4f8", "#16233a"),
-        "applied": ("#e88c30", "#2e2113"),
-        "tests_passed": ("#2eb88a", "#10241e"),
-        "tests_failed": ("#ef4444", "#2a1416"),
-        "rejected": ("#a1a1aa", "#1c1c1f"),
-        "reverted": ("#af57db", "#251a2c"),
-    },
-    badge={
-        "head": ("#18181b", "#fafafa", "#fafafa"),
-        "local": ("#2eb88a", "#10241e", "#1d4d3c"),
-        "remote": ("#a1a1aa", "#18181b", "#27272a"),
-        "tag": ("#e88c30", "#2e2113", "#5a3a15"),
-    },
-    diff={
-        "add": ("#2eb88a", "#10241e"),
-        "del": ("#ef4444", "#2a1416"),
-        "hunk": ("#fafafa", "#1c1c1f"),  # the accent, not a third hue
-        "header": ("#fafafa", ""),
-    },
-)
+def _parse_colour(value: str) -> tuple[int, int, int] | None:
+    text = value.strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(ch * 2 for ch in text)
+    if len(text) != 6:
+        return None
+    try:
+        return int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)
+    except ValueError:
+        return None
 
-LIGHT: Final[Palette] = Palette(
-    name="light",
-    # GitHub Light (Primer): white page, grey wells, one blue.
-    window="#ffffff",
-    panel="#ffffff",
-    base="#f6f8fa",
-    surface="#f6f8fa",
-    stripe="#f6f8fa",
-    text="#1f2328",
-    muted="#656d76",
-    border="#d0d7de",
-    accent="#0969da",
-    accent_text="#ffffff",
-    selection_bg="#ddf4ff",
-    selection_text="#1f2328",
-    ok="#1a7f37",
-    err="#cf222e",
-    warning="#9a6700",
-    error_bg="#ffebe9",
-    hover="#f3f4f6",
-    pressed="#e7eaef",
-    pen="#e00d22",
-    lanes=(
-        "#0969da", "#bc4c00", "#1a7f37", "#8250df",
-        "#bf3989", "#cf222e", "#0598a8", "#6e7781",
-    ),
-    status={
-        "proposed": ("#0969da", "#ddf4ff"),
-        "applied": ("#bc4c00", "#fff1e5"),
-        "tests_passed": ("#1a7f37", "#dafbe1"),
-        "tests_failed": ("#cf222e", "#ffebe9"),
-        "rejected": ("#656d76", "#eff1f3"),
-        "reverted": ("#8250df", "#f3e8ff"),
-    },
-    badge={
-        "head": ("#ffffff", "#0969da", "#0969da"),
-        "local": ("#1a7f37", "#dafbe1", "#8ddb9a"),
-        "remote": ("#656d76", "#f6f8fa", "#d0d7de"),
-        "tag": ("#9a6700", "#fff8c5", "#e3c05a"),
-    },
-    diff={
-        "add": ("#1a7f37", "#dafbe1"),
-        "del": ("#cf222e", "#ffebe9"),
-        "hunk": ("#0969da", "#ddf4ff"),
-        "header": ("#1f2328", ""),
-    },
-)
+
+def _mix(foreground: str, background: str, amount: float) -> str:
+    """Blend ``foreground`` into ``background``: a tint the theme keeps."""
+    fg = _parse_colour(foreground)
+    bg = _parse_colour(background)
+    if fg is None or bg is None:
+        return background
+    return "#%02x%02x%02x" % tuple(
+        int(round(f * amount + b * (1 - amount))) for f, b in zip(fg, bg)
+    )
+
+
+def _tokens_to_palette(name: str, spec: dict) -> Palette:
+    """One CSS token set -> the palette the widgets actually paint with."""
+    v = spec["vars"]
+
+    def token(key: str, fallback: str) -> str:
+        return v.get(key, fallback)
+
+    ink = token("ink", "#dddddd")
+    dim = token("ink-dim", "#a0a0a0")
+    accent = token("accent", ink)
+    well = token("surface-2", "#333333")
+    line = token("line", "#555555")
+    ok = token("ok", "#5c8a5c")
+    danger = token("danger", "#cc3333")
+    warn = token("warn", "#e8a735")
+
+    lanes = tuple(
+        token(f"series-{index}", accent) for index in range(1, 9)
+    )
+    # diff and status backgrounds are the theme's own hue washed into the well,
+    # so red and green are told apart in every theme without a second palette
+    add_bg = _mix(ok, well, 0.18)
+    del_bg = _mix(danger, well, 0.18)
+    hunk_bg = _mix(accent, well, 0.16)
+    warn_bg = _mix(warn, well, 0.16)
+    return Palette(
+        name=name,
+        window=token("surface", "#444444"),
+        panel=token("surface", "#444444"),
+        base=well,
+        surface=well,
+        # a row stripe is a quiet step off the well; hover is that step in every
+        # one of these token sets
+        stripe=token("hover", well),
+        text=ink,
+        muted=dim,
+        border=line,
+        accent=accent,
+        accent_text=token("ink-on-accent", well),
+        selection_bg=token("accent-deep", line),
+        selection_text=token("ink-bright", ink),
+        ok=ok,
+        err=danger,
+        warning=warn,
+        error_bg=well,
+        hover=token("hover", well),
+        pressed=token("pressed", line),
+        pen=token("pen", "#ff2d3f"),
+        lanes=lanes,
+        status={
+            "proposed": (accent, hunk_bg),
+            "applied": (warn, warn_bg),
+            "tests_passed": (ok, add_bg),
+            "tests_failed": (danger, del_bg),
+            "rejected": (dim, well),
+            "reverted": (token("accent-deep", dim), hunk_bg),
+        },
+        badge={
+            "head": (token("ink-on-accent", well), accent, accent),
+            "local": (ok, well, ok),
+            "remote": (dim, well, line),
+            "tag": (warn, well, warn),
+        },
+        diff={
+            "add": (ok, add_bg),
+            "del": (danger, del_bg),
+            "hunk": (accent, hunk_bg),
+            "header": (ink, ""),
+        },
+    )
+
+
+#: every theme the reference design ships, in its own order
+THEMES: Final[dict[str, Palette]] = {
+    name: _tokens_to_palette(name, spec)
+    for name, spec in THEME_TOKENS.items()
+}
+
+#: what ``--theme dark`` / ``--theme light`` have always meant
+ALIASES: Final[dict[str, str]] = {
+    "dark": "spartan-dark",
+    "light": "github-light",
+}
+
+DARK: Final[Palette] = THEMES["spartan-dark"]
+LIGHT: Final[Palette] = THEMES["github-light"]
+
+
+def theme_label(name: str) -> str:
+    """The name a theme is shown under in Settings."""
+    spec = THEME_TOKENS.get(ALIASES.get(name, name))
+    return str(spec["label"]) if spec else name
+
+
+def is_light_theme(name: str) -> bool:
+    spec = THEME_TOKENS.get(ALIASES.get(name, name))
+    return bool(spec and spec.get("light"))
+
+
+def theme_names() -> list[str]:
+    """The registry in the reference's own order."""
+    return list(THEME_TOKENS)
 
 
 def lane_color(palette: Palette, lane: int) -> str:
@@ -322,20 +356,19 @@ def lane_color(palette: Palette, lane: int) -> str:
 
 
 def resolve(name: str, prefers_dark: bool | None = None) -> Palette:
-    """Pick a palette for ``--theme`` (auto|dark|light).
-
-    ``prefers_dark`` is the caller's answer to "does the system want dark?"
-    (Qt's ``styleHints().colorScheme()`` in the app); ``None`` falls back to
-    the dark palette, matching selfkraken's GitKraken-ish look.
-    """
+    """Pick a palette by theme id (``auto`` follows the desktop preference)."""
     choice = (name or "auto").strip().lower()
-    if choice == "dark":
+    if choice == "auto":
+        return resolve("dark") if prefers_dark is not False else resolve("light")
+    key = ALIASES.get(choice, choice)
+    palette = THEMES.get(key)
+    if palette is None:
         return DARK
-    if choice == "light":
-        return LIGHT
-    if choice not in ("", "auto"):
-        raise ValueError(f"unknown theme {name!r} — use auto, dark or light")
-    return DARK if (prefers_dark is None or prefers_dark) else LIGHT
+    if choice in ALIASES:
+        # keep the historic name, so "dark"/"light" still read the same in the
+        # editor theme and in anything that compares palette.name
+        return replace(palette, name=choice)
+    return palette
 
 
 def ui_font_css() -> str:

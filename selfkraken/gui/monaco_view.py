@@ -306,10 +306,12 @@ class MonacoView(QWidget):
         *,
         parent: Optional[QWidget] = None,
         name: str = "code viewer",
+        font_size: int = 12,
     ) -> None:
         super().__init__(parent)
         self._palette = palette
-        self._tokens = mp.theme_tokens(palette)
+        self._font_size = int(font_size)
+        self._tokens = mp.theme_tokens(palette, font_size=self._font_size)
         self._mode = ""
         self._text = ""
         self._ready = False
@@ -396,7 +398,7 @@ class MonacoView(QWidget):
         editor = QPlainTextEdit(self)
         editor.setReadOnly(True)
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        editor.setFont(monospace_font(MONO_PT))
+        editor.setFont(monospace_font(max(self._font_size * 0.75, 6.0)))
         editor.document().setDocumentMargin(0)
         editor.setAccessibleName(f"{name} (plain viewer)")
         self._fallback_editor = editor
@@ -525,11 +527,28 @@ class MonacoView(QWidget):
         """A short explanation instead of code (binary file, gone from disk…)."""
         self._dispatch(mp.build_text_payload(message, tokens=self._tokens), "text", message)
 
+    def set_font_size(self, pixels: int) -> None:
+        """Resize the editor's text without rebuilding the view."""
+        size = max(8, min(int(pixels), 28))
+        if size == self._font_size:
+            return
+        self._font_size = size
+        self._tokens = mp.theme_tokens(self._palette, font_size=size)
+        editor = getattr(self, "_fallback_editor", None)
+        if editor is not None:
+            editor.setFont(monospace_font(max(size * 0.75, 6.0)))
+        if self.uses_monaco:
+            payload = mp.build_theme_payload(self._tokens)
+            if self._ready:
+                self._push(payload)
+            else:
+                self._queued = payload
+
     def set_theme(self, theme: str) -> None:
-        """Recolour to ``'dark'`` or ``'light'`` — the app's palette, in Monaco."""
+        """Recolour to a theme from the registry — the app's palette, in Monaco."""
         palette = resolve_palette(theme, prefers_dark=None)
         self._palette = palette
-        self._tokens = mp.theme_tokens(palette)
+        self._tokens = mp.theme_tokens(palette, font_size=self._font_size)
         if self._fallback_highlighter is not None:
             self._fallback_highlighter.set_palette(palette)
         if self._fallback_note is not None:

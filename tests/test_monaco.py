@@ -532,7 +532,8 @@ def test_monaco_view_theme_switch_recolours_the_fallback(qapp) -> None:
     qapp.processEvents()
     view.set_theme("light")
     assert view._palette.name == "light"
-    assert view._fallback_highlighter._palette is LIGHT
+    assert view._fallback_highlighter._palette.name == "light"
+    assert view._fallback_highlighter._palette.base == LIGHT.base
     view.set_theme("dark")
     assert view._tokens["background"] == DARK.base
     view.close()
@@ -555,9 +556,9 @@ def test_payload_theme_tokens_come_from_the_palette() -> None:
     assert dark["addedBackground"] == DARK.diff["add"][1]
     assert dark["removedBackground"] == DARK.diff["del"][1]
     assert dark["selectionBackground"] == DARK.selection_bg
-    assert dark["name"] == "selfkraken-dark"
+    assert dark["name"] == f"selfkraken-{DARK.name}"
     assert dark["base"] == "vs-dark"
-    assert light["base"] == "vs-light"
+    assert light["base"] == "vs"
     assert dark["fontSize"] == 12 and dark["lineHeight"] == 18
     assert light["background"] == LIGHT.base != dark["background"]
     # Monaco and the plain viewer must not disagree about what "added" looks like

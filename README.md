@@ -300,14 +300,20 @@ in worker threads; the window never freezes, and errors come back as plain
 
 ### Themes and the Settings page
 
-**Settings → Appearance** offers three choices, each with a swatch of what it
-looks like:
+**Settings → Appearance** has the full set of themes from the reference design
+— **28 of them**, dark grounds first, light grounds after:
 
-| Choice | What it is |
-| --- | --- |
-| **Dark** (default) | Spartan Dark: near-black `#09090b`, zinc greys, one white accent, orange as the only warm note |
-| **Light** | GitHub Light: white page, `#f6f8fa` wells, one blue (`#0969da`) |
-| **System** | follows the desktop's own light/dark preference |
+**Workbench dark · GitHub Light · OLED black · Vercel Dark · Spartan Dark ·
+GitHub Dark · Atom One Dark · One Dark Pro · VS Code Dark · Dracula · Tokyo
+Night · Catppuccin Mocha · Nord · Monokai · Gruvbox Dark · Solarized Dark ·
+Material Palenight · Night Owl · Ayu Mirage · Rosé Pine · Kanagawa ·
+Synthwave '84 · GitHub Light · VS Code Light · Solarized Light ·
+Catppuccin Latte · Gruvbox Light · High Contrast**
+
+Each is drawn as a card with its own swatch; **Spartan Dark** is the default.
+The same page carries a **Diff** card — the patch text size in pixels (9–20),
+applied to the diff column and to every file tab — and a **Type** card naming
+the families in use.
 
 The choice applies the moment it is picked — no restart — and is remembered in
 `gui-window.json` next to the database, so the window comes back in the theme

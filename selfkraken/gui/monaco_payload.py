@@ -438,7 +438,17 @@ def language_for_path(path: str) -> str:
     return "plaintext"
 
 
-def theme_tokens(palette: Palette) -> dict[str, Any]:
+def _is_light(palette: Palette) -> bool:
+    """True when the palette's page is a light ground (for Monaco's base)."""
+    value = palette.window.lstrip("#")
+    try:
+        r, g, b = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return False
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 140
+
+
+def theme_tokens(palette: Palette, *, font_size: int = 12) -> dict[str, Any]:
     """The Monaco theme, built from the app's own palette tokens.
 
     Monaco wants raw hex colours, not Qt roles, so the mapping is explicit: the
@@ -449,7 +459,9 @@ def theme_tokens(palette: Palette) -> dict[str, Any]:
     diff = palette.diff
     return {
         "name": f"selfkraken-{palette.name}",
-        "base": f"vs-{palette.name}",
+        # Monaco only knows "vs" and "vs-dark"; a custom theme name would be
+        # rejected and leave the editor unstyled
+        "base": "vs" if _is_light(palette) else "vs-dark",
         "background": palette.base,
         "foreground": palette.text,
         "muted": palette.muted,
@@ -466,8 +478,8 @@ def theme_tokens(palette: Palette) -> dict[str, Any]:
         "hunk": diff["hunk"][0],
         "markerBackground": palette.selection_bg,
         "fontFamily": _theme.mono_family(),
-        "fontSize": 12,
-        "lineHeight": 18,
+        "fontSize": int(font_size),
+        "lineHeight": max(int(round(int(font_size) * 1.5)), int(font_size) + 2),
     }
 
 
