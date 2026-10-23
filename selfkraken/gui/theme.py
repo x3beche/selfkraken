@@ -51,6 +51,9 @@ ACTION_BAR_HEIGHT: Final[int] = 34
 REVIEW_PAGE_WIDTH: Final[int] = 860
 #: the settings column: grouped sections, each row title + note + value
 SETTINGS_NAV_WIDTH: Final[int] = 288
+#: the workspace panes: the file tree on the left, the commit diff on the right
+FILES_PANE_WIDTH: Final[int] = 250
+COMMIT_DIFF_WIDTH: Final[int] = 460
 RADIUS_PILL: Final[int] = 9  #: half the pill height, so it reads as a capsule
 
 ROW_HEIGHT: Final[int] = 22  #: tables, trees, dock titles
@@ -492,6 +495,18 @@ def stylesheet(p: Palette, dock_title_inset: int = DOCK_TITLE_INSET) -> str:
     QLabel#cardNote {{ color: {p.muted}; font-size: {META_PT:g}pt; background: transparent; }}
     QLabel#cardKey {{ color: {p.muted}; background: transparent; }}
     QLabel#cardValue {{ color: {p.text}; background: transparent; }}
+
+    QSplitter#workspace::handle {{ background: {p.border}; width: {BORDER_WIDTH}px; }}
+    QWidget#commitDiffPane {{ background: {p.window}; }}
+    QFrame#commitDiffHeader {{ background: {p.window}; border-bottom: {BORDER_WIDTH}px solid {p.border}; }}
+    QLabel#paneTitle {{
+        color: {p.muted}; font-size: {META_PT:g}pt; font-weight: 600;
+        letter-spacing: 0.08em; background: transparent;
+    }}
+    QPlainTextEdit#commitDiffView {{
+        background: {p.base}; color: {p.text}; border: none;
+        selection-background-color: {p.selection_bg}; selection-color: {p.selection_text};
+    }}
 
     /* ---------------------------------------------------------------- shell */
     QFrame#topBar {{

@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -77,7 +78,7 @@ from PySide6.QtWidgets import (
 )
 
 from selfkraken import __version__ as APP_VERSION
-from selfkraken import diffs, indexer, portability, sample, workflow
+from selfkraken import diffs, gitops, indexer, portability, sample, workflow
 from selfkraken.config import Settings, load_settings
 from selfkraken.db import Proposal, Repo, Store, TestRun
 from selfkraken.errors import SKError
@@ -86,7 +87,7 @@ from selfkraken.workflow import ApplyOutcome, DEGRADED_MODE_HINT
 
 from selfkraken.gui import monaco_payload as monaco_api
 from selfkraken.gui import fonts as ui_fonts
-from selfkraken.gui.diff_view import monospace_font
+from selfkraken.gui.diff_view import DiffHighlighter, monospace_font
 from selfkraken.gui.graph_widget import GraphView, read_commit_detail
 from selfkraken.gui.monaco_view import MonacoView
 from selfkraken.gui.models import (
@@ -110,6 +111,7 @@ from selfkraken.gui.theme import (
     DOCK_TITLE_INSET,
     DOCK_TITLE_HEIGHT,
     FONT_PT,
+    HEADER_HEIGHT,
     INPUT_HEIGHT,
     LAYOUT_SPACING,
     LEFT_DOCK_RATIO,
@@ -131,6 +133,8 @@ from selfkraken.gui.theme import (
     SPACE_4,
     SPACE_6,
     SPACE_8,
+    COMMIT_DIFF_WIDTH,
+    FILES_PANE_WIDTH,
     REVIEW_PAGE_WIDTH,
     SETTINGS_NAV_WIDTH,
     STATUS_BAR_HEIGHT,
@@ -200,11 +204,10 @@ MIN_WINDOW_HEIGHT = 700
 TAB_GRAPH = 0
 TAB_PROPOSALS = 1
 TAB_CHANGES = 2
-TAB_FILES = 3
-TAB_BRANCHES = 4
-TAB_REVIEW = 5
-TAB_SETTINGS = 6
-PERMANENT_TABS = 7
+TAB_BRANCHES = 3
+TAB_REVIEW = 4
+TAB_SETTINGS = 5
+PERMANENT_TABS = 6
 
 #: a diff is shown side by side only when the pane is at least this wide; below
 #: it the two columns would each be narrower than a line of code
@@ -1234,7 +1237,13 @@ class MainWindow(QMainWindow):
         self.proposals_stack.addWidget(self.proposals_empty)     # index 1
         self.proposals_stack.addWidget(self.proposals_table)     # index 2
 
-        self.tabs.addTab(self.graph_stack, "&Graph")
+        # -- the workspace: files on the left, commits in the middle, and the
+        #    selected commit's diff on the right -----------------------------
+        self.workspace = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace.setObjectName("workspace")
+        self.workspace.setChildrenCollapsible(False)
+        self.workspace.addWidget(self.graph_stack)
+        self.tabs.addTab(self.workspace, "&Graph")
         self.tabs.addTab(self.proposals_stack, "&Proposals")
 
         # -- Changes tab: the proposal diff, in Monaco -----------------------
@@ -1607,10 +1616,75 @@ class MainWindow(QMainWindow):
         self.branches_stack.addWidget(self.branches_empty)
         self.branches_stack.addWidget(self.branches_view)
 
-        self.tabs.addTab(self.files_stack, "&Files")
+        # files live beside the commits, not behind a tab: the tree is what
+        # the middle of the window is read against
+        self.commit_diff_page = self._build_commit_diff_pane()
+        self.workspace.insertWidget(0, self.files_stack)
+        self.workspace.addWidget(self.commit_diff_page)
+        self.workspace.setStretchFactor(0, 0)
+        self.workspace.setStretchFactor(1, 1)
+        self.workspace.setStretchFactor(2, 0)
+        self.workspace.setSizes([FILES_PANE_WIDTH, 760, COMMIT_DIFF_WIDTH])
+
         self.tabs.addTab(self.branches_stack, "&Branches")
 
     # ------------------------------------------------------------- right dock
+    def _build_commit_diff_pane(self) -> QWidget:
+        """The selected commit's patch, beside the graph that selected it."""
+        pane = QWidget()
+        pane.setObjectName("commitDiffPane")
+        box = QVBoxLayout(pane)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+
+        header = QFrame()
+        header.setObjectName("commitDiffHeader")
+        header.setFixedHeight(control_height(HEADER_HEIGHT, META_PT))
+        row = QHBoxLayout(header)
+        row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, 0)
+        row.setSpacing(SPACE_6)
+        caption = QLabel("COMMIT DIFF")
+        caption.setObjectName("paneTitle")
+        self.commit_diff_title = ElidedLabel("pick a commit", self.palette, muted=True)
+        self.commit_diff_title.setAccessibleName("Commit diff title")
+        row.addWidget(caption)
+        row.addWidget(self.commit_diff_title, 1)
+        box.addWidget(header)
+
+        self.commit_diff_view = QPlainTextEdit()
+        self.commit_diff_view.setObjectName("commitDiffView")
+        self.commit_diff_view.setReadOnly(True)
+        self.commit_diff_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.commit_diff_view.setFont(monospace_font(MONO_PT))
+        self.commit_diff_view.setAccessibleName("Commit diff")
+        self.commit_diff_view.setPlainText(
+            "Select a commit to see what it changed."
+        )
+        self.commit_diff_highlighter = DiffHighlighter(
+            self.commit_diff_view.document(), self.palette
+        )
+        box.addWidget(self.commit_diff_view, 1)
+        return pane
+
+    def _load_commit_patch(self, repo_path: Path, sha: str, subject: str) -> None:
+        """Ask git for the commit's patch and put it in the right-hand pane."""
+        self.commit_diff_title.setText(f"{sha[:9]} · {subject}")
+        self.commit_diff_view.setPlainText("Reading the commit…")
+
+        def job(_store: Store, _settings: Settings) -> str:
+            proc = gitops.run_git(
+                repo_path, "show", "--patch", "--no-color", "--format=", sha
+            )
+            return proc.stdout
+
+        def done(patch: str) -> None:
+            self.commit_diff_view.setPlainText(patch or "This commit changed nothing.")
+
+        def failed(message: str) -> None:
+            self.commit_diff_view.setPlainText(f"Diff unavailable: {message}")
+
+        self.runner.submit("commit-diff", job, on_ok=done, on_error=failed)
+
     def _build_review_page(self) -> None:
         """The review column, as a page of the workspace."""
 
@@ -3140,6 +3214,8 @@ class MainWindow(QMainWindow):
         )
         self.commit_message_edit.setPlainText(commit.subject or "(no subject)")
         repo_path = Path(repo.path)
+        if hasattr(self, "commit_diff_view"):
+            self._load_commit_patch(repo_path, commit.sha, commit.subject or "")
 
         def job(_store: Store, _settings: Settings):
             return read_commit_detail(repo_path, commit.sha)
